@@ -8,16 +8,13 @@ namespace Disc0ver
     [RequireComponent(typeof(MovementComponent))]
     public class CharacterController : MonoBehaviour
     {
-        private static readonly float MIN_TICK_TIME = 1e-6f;
-        private static readonly float BrakingSubStepTime = 1.0f / 33.0f;
-        
         private Vector3 inputVec;
         private Vector3 acceleration;
 
         [SerializeField, Range(1f, 10f)]
-        private float maxVelocity;
-        [SerializeField, Range(1f, 5f)]
-        private float maxAcceleration = 3f;
+        private float maxVelocity = 1f;
+        [SerializeField, Range(1f, 10f)]
+        private float maxAcceleration = 7f;
 
         private float brakingFrictionFactor = 2f;
 
@@ -55,6 +52,7 @@ namespace Disc0ver
                                   Mathf.Min(friction * deltaTime, 1f);
 
                 currentVelocity = currentVelocity + acceleration * deltaTime;
+                currentVelocity = Vector3.ClampMagnitude(currentVelocity, maxVelocity);
             }
             
         }
@@ -71,10 +69,10 @@ namespace Disc0ver
             }
 
             var oldVelocity = currentVelocity;
-            var maxTimeStep = Mathf.Clamp(BrakingSubStepTime, 1.0f / 75.0f, 1.0f / 20.0f);
+            var maxTimeStep = Mathf.Clamp(DCharacterControllerConst.BrakingSubStepTime, 1.0f / 75.0f, 1.0f / 20.0f);
             var revAccel = -breakingDeceleration * currentVelocity.normalized;
             var remainingTime = deltaTime;
-            while (remainingTime >= MIN_TICK_TIME)
+            while (remainingTime >= DCharacterControllerConst.MIN_TICK_TIME)
             {
                 var dt = (remainingTime > maxTimeStep) ? Mathf.Min(maxTimeStep, remainingTime * 0.5f) : remainingTime;
                 remainingTime -= dt;
