@@ -1,6 +1,8 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using Unity.VisualScripting;
+using UnityEditor.UI;
 using UnityEngine;
 
 namespace Disc0ver
@@ -87,10 +89,131 @@ namespace Disc0ver
         public Vector3 LedgeFacingDirection;
     }
 
-    public struct SweepHitReport
+    public struct HitResult
     {
-        public Collider hitCollider;
+        public bool isBlockingHit;
+        public bool isStartPenetrating;
+        public float time;
+        public Vector3 location;
         public RaycastHit hitInfo;
+        public Vector3 traceStart;
+        public Vector3 traceEnd;
+
+        public HitResult(float _time = 1f)
+        {
+            time = _time;
+            hitInfo = default;
+            isBlockingHit = false;
+            isStartPenetrating = false;
+            location = Vector3.zero;
+            traceStart = Vector3.zero;
+            traceEnd = Vector3.zero;
+        }
+
+        public void Reset(float _time = 1f)
+        {
+            time = _time;
+            hitInfo = default;
+            isBlockingHit = false;
+            isStartPenetrating = false;
+            location = Vector3.zero;
+            traceStart = Vector3.zero;
+            traceEnd = Vector3.zero;
+        }
+
+        public void Update(Vector3 start, Vector3 target, RaycastHit hit, bool blockingHit, bool startPenetrating)
+        {
+            traceStart = start;
+            traceEnd = target;
+            hitInfo = hit;
+            isBlockingHit = blockingHit;
+            isStartPenetrating = startPenetrating;
+            time = hitInfo.distance / (target - start).magnitude;
+            location = start + (target - start) * time;
+        }
+
+        public bool IsValidBlockingHit => isBlockingHit && !isStartPenetrating;
+    }
+
+    [Serializable]
+    public struct FindGroundResult
+    {
+        public bool isBlockingHit;
+        public bool isWalkableFloor;
+        public bool isLineTrace;
+        /// <summary>
+        /// the distance to the floor, computed from the trace
+        /// </summary>
+        public float floorDistance;
+        /// <summary>
+        /// The distance to the floor, computed from the trace. Only valid if isLineTrace is true.
+        /// </summary>
+        public float lineDistance;
+
+        public HitResult hitResult;
+
+        public FindGroundResult(bool isBlockingHit = false, bool isWalkableFloor = false, bool isLineTrace = false,
+            float floorDistance = 0f, float lineDistance = 0f)
+        {
+            this.isBlockingHit = isBlockingHit;
+            this.isWalkableFloor = isWalkableFloor;
+            this.isLineTrace = isLineTrace;
+            this.floorDistance = floorDistance;
+            this.lineDistance = lineDistance;
+            hitResult = default;
+        }
+
+        public float GetDistanceToFloor()
+        {
+            return isLineTrace ? lineDistance : floorDistance;
+        }
+
+        public void SetFromSweep(HitResult sweepResult, float distance, bool walkable)
+        {
+            hitResult = sweepResult;
+            isBlockingHit = sweepResult.IsValidBlockingHit;
+            isWalkableFloor = walkable;
+            isLineTrace = false;
+            floorDistance = distance;
+            lineDistance = 0f;
+        }
+
+        public void SetFromLineTrace(HitResult result, float sweepFloorDist, float distance, bool walkable)
+        {
+            if (hitResult.isBlockingHit && result.isBlockingHit)
+            {
+                var oldHit = hitResult;
+                hitResult = result;
+                hitResult.time = oldHit.time;
+                hitResult.hitInfo = oldHit.hitInfo;
+                hitResult.location = oldHit.location;
+                hitResult.traceStart = oldHit.traceStart;
+                hitResult.traceEnd = oldHit.traceEnd;
+            
+                isLineTrace = true;
+                isWalkableFloor = walkable;
+                lineDistance = distance;
+                floorDistance = sweepFloorDist;
+            }
+        }
+    }
+
+    public struct StepDownResult
+    {
+        /// <summary>
+        /// true if the floor was computed as a result of then step down
+        /// </summary>
+        public bool computedFloor;
+        /// <summary>
+        /// the result of the floor test if the floor was updated
+        /// </summary>
+        public FindGroundResult GroundResult;
+
+        public StepDownResult(bool computedFloor = false)
+        {
+            this.computedFloor = computedFloor;
+            GroundResult = new FindGroundResult();
+        }
     }
     
     public struct OverlapResult
@@ -132,24 +255,39 @@ namespace Disc0ver
         }
     }
 
+    public struct MovementCache
+    {
+        public Vector3 position;
+        public Quaternion rotation;
+        public FindGroundResult oldGround;
+        private MovementComponent _movementComponent;
+
+        public MovementCache(MovementComponent movementComponent)
+        {
+            position = movementComponent.TransientPosition;
+            rotation = movementComponent.TransientRotation;
+            oldGround = movementComponent.CurrentGround;
+            _movementComponent = movementComponent;
+        }
+
+        public void RevertMove()
+        {
+            _movementComponent.RevertMove(this);
+        }
+    }
+
     public class DCharacterControllerConst
     {
         public static readonly float MIN_TICK_TIME = 1e-6f;
         public static readonly float BrakingSubStepTime = 1.0f / 33.0f;
         public static readonly float CollisionOffset = 0.01f;
+        public static readonly float SweepBackOffset = 0.01f;
     }
 
     
     
     public class MovementComponent : MonoBehaviour
     {
-        #region Consts
-
-        public const int MaxCollisionBudget = 16;
-        public const int MaxHitBudget = 16;
-
-        #endregion
-        
         #region Settings
 
         public Rigidbody rigidbody;
@@ -166,6 +304,20 @@ namespace Disc0ver
         public int maxMovementSweepIterations = 5;
 
         public int maxRigidbodyOverlapsCount = 16;
+
+        public int maxHitsBudget = 16;
+        
+        public int maxCollisionBudget = 16;
+
+        public float minFloorDistance = 1.5f;
+
+        public float maxFloorDistance = 2.4f;
+
+        public float SweepEdgeRejectDistance = 0.1f;
+
+        public float PerchRadiusThreshold = 0.15f;
+
+        public float perchAdditionalHeight = 0.05f;
         
         [Header("Ground Setting")] 
         [Tooltip("可站立的地面 layer")]
@@ -175,11 +327,13 @@ namespace Disc0ver
         [Range(0f, 89f)]
         public float maxStableAngle = 60f;
 
+        [Tooltip("保持地面移动速度")]
+        public bool maintainHorizontalGroundVelocity = false;
 
         [Header("Step Setting")] 
         [Tooltip("最大步高")]
         public float maxStepHeight = 0.5f;
-
+        
         [Header("Capsule Setting")]
         public CapsuleConfig capsuleConfig;
 
@@ -188,20 +342,24 @@ namespace Disc0ver
         #region Properties
 
         private Capsule _capsule;
+        [SerializeField]
         private Vector3 velocity = Vector3.zero;
         private CharacterController _controller;
 
         private Vector3 _initialSimulationPosition;
         private Vector3 _transientPosition;
+        public Vector3 TransientPosition => _transientPosition;
         private Quaternion _initialSimulationRotation;
         private Quaternion _transientRotation;
+        public Quaternion TransientRotation => _transientRotation;
 
         private Vector3 _movePositionTarget;
         private bool _movePositionDirty;
         private Quaternion _moveRotationTarget;
         private bool _moveRotationDirty;
 
-        private Collider[] _internalProbedColliders = new Collider[MaxCollisionBudget];
+        private RaycastHit[] _internalCharacterHits;
+        private Collider[] _internalProbedColliders;
         private OverlapInfo _overlapInfo;
 
         [NonSerialized] 
@@ -221,8 +379,21 @@ namespace Disc0ver
 
         [NonSerialized]
         public CharacterTransientGroundingReport lastGroundingStatus = new CharacterTransientGroundingReport();
+
+        // [NonSerialized] 
+        public FindGroundResult CurrentGround;
         #endregion
 
+//         #region Editor
+//
+// #if UNITY_EDITOR
+//         private Collider[] _editorProbedColliders = new Collider[MaxCollisionBudget];
+//         private OverlapInfo _editorOverlapInfo;
+// #endif
+//         
+//
+//         #endregion
+        
         public void SetPosition(Vector3 position)
         {
             transform.position = position;
@@ -269,14 +440,15 @@ namespace Disc0ver
             }
 
             _capsule = new Capsule();
-            _capsule.Init(this);
+            _capsule.Init(this, true);
             _overlapInfo = new OverlapInfo(maxRigidbodyOverlapsCount);
-
+            _internalCharacterHits = new RaycastHit[maxHitsBudget];
+            _internalProbedColliders = new Collider[maxCollisionBudget];
         }
 
-        private void Update()
+        private void FixedUpdate()
         {
-            Simulate(Time.deltaTime);
+            Simulate(Time.fixedDeltaTime);
             
             SetPositionAndRotation(_transientPosition, _transientRotation);
         }
@@ -296,54 +468,77 @@ namespace Disc0ver
         {
             PreSimulationUpdate();
 
-            controller.CalcVelocity(ref velocity, deltaTime, 8f, false, 20f);
+            // controller.CalcVelocity(ref velocity, deltaTime, 8f, false, 20f);
+            // var delta = velocity * deltaTime;
+            // _transientPosition += delta;
+            
+            PerformMovement(deltaTime);
         }
         
-        public void OnDrawGizmos()
+        // public void OnDrawGizmos()
+        // {
+        //     if (_capsule == null)
+        //         return;
+        //     
+        //     // var resolutionMovement = PenetrationAdjustment(_transientPosition, _transientRotation, _internalProbedColliders, ref _overlapInfo);
+        //
+        //     for (int i = 0; i < _overlapInfo.OverlapCount; ++i)
+        //     {
+        //         var collider = _overlapInfo.overlaps[i].Collider;
+        //     
+        //         if (collider == _capsule.capsule)
+        //             continue; // skip ourself
+        //     
+        //         Vector3 otherPosition = collider.gameObject.transform.position;
+        //         Quaternion otherRotation = collider.gameObject.transform.rotation;
+        //     
+        //         Vector3 direction;
+        //         float distance;
+        //     
+        //         bool overlapped = Physics.ComputePenetration(
+        //             _capsule.capsule, transform.position, transform.rotation,
+        //             collider, otherPosition, otherRotation,
+        //             out direction, out distance
+        //         );
+        //     
+        //         // draw a line showing the depenetration direction if overlapped
+        //         if (overlapped)
+        //         {
+        //             Gizmos.color = Color.red;
+        //             Gizmos.DrawRay(otherPosition, direction * distance);
+        //         }
+        //     }
+        //     
+        //     // int nbOverlaps = _capsule.CollisionOverlap(_transientPosition, _transientRotation, _internalProbedColliders, 0.01f);
+        //     // for (int i = 0; i < nbOverlaps; i++)
+        //     // {
+        //     //     Debug.Log(_internalProbedColliders[i].name);
+        //     //     Gizmos.color = Color.blue;
+        //     //     var point = _internalProbedColliders[i].ClosestPointOnBounds(_capsule.capsule.center);
+        //     //     Gizmos.DrawRay(point, (_capsule.capsule.center - point).normalized * 3);
+        //     // }
+        //
+        //     // var hitNumber = _capsule.CollisionSweep(transform.position, transform.position + Vector3.forward * 10, _transientRotation,
+        //     //     _internalCharacterHits);
+        //     // for (int i = 0; i < hitNumber; i++)
+        //     // {
+        //     //     Gizmos.color = Color.blue;
+        //     //     Gizmos.DrawRay(_internalCharacterHits[i].point, _internalCharacterHits[i].normal * 3);
+        //     // }
+        //     //
+        //     // hitNumber = _capsule.CollisionSweep(transform.position, transform.position + Vector3.down * 10, _transientRotation,
+        //     //     _internalCharacterHits);
+        //     // for (int i = 0; i < hitNumber; i++)
+        //     // {
+        //     //     Gizmos.color = Color.blue;
+        //     //     Gizmos.DrawRay(_internalCharacterHits[i].point, _internalCharacterHits[i].normal * 3);
+        //     // }
+        //     
+        // }
+
+        private void PerformMovement(float deltaTime)
         {
-            if (_capsule == null)
-                return;
-            var hit = new HitStabilityReport();
-            var resolutionMovement = PenetrationAdjustment(_transientPosition, _transientRotation, _internalProbedColliders, ref hit, ref _overlapInfo);
-
-            for (int i = 0; i < _overlapInfo.OverlapCount; ++i)
-            {
-                var collider = _overlapInfo.overlaps[i].Collider;
-
-                if (collider == _capsule.capsule)
-                    continue; // skip ourself
-
-                Vector3 otherPosition = collider.gameObject.transform.position;
-                Quaternion otherRotation = collider.gameObject.transform.rotation;
-
-                Vector3 direction;
-                float distance;
-
-                bool overlapped = Physics.ComputePenetration(
-                    _capsule.capsule, transform.position, transform.rotation,
-                    collider, otherPosition, otherRotation,
-                    out direction, out distance
-                );
-
-                // draw a line showing the depenetration direction if overlapped
-                if (overlapped)
-                {
-                    Gizmos.color = Color.red;
-                    Gizmos.DrawRay(otherPosition, direction * distance);
-                }
-            }
-        }
-
-        private void ColliderSweep(Vector3 position, Quaternion rotation, Vector3 direction, float distance,
-            out RaycastHit suitableHit)
-        {
-            suitableHit = new RaycastHit();
-            
-        }
-
-        private void PerformMovement()
-        {
-            
+            Walking(deltaTime, 0);
         }
 
         /// <summary>
@@ -353,15 +548,35 @@ namespace Disc0ver
         /// <param name="rotation"></param>
         /// <param name="isSweep"></param>
         /// <param name="hit"></param>
-        private void SafeMoveUpdatedComponent(Vector3 delta, Quaternion rotation, bool isSweep, ref SweepHitReport hit)
+        private void SafeMoveUpdatedComponent(Vector3 delta, Quaternion rotation, bool isSweep, ref HitResult hit)
         {
-            PenetrationAdjustment(_transientPosition, _transientRotation, _internalProbedColliders, ref _overlapInfo);
+            PenetrationAdjustment1(_transientPosition, _transientRotation, _internalProbedColliders, ref _overlapInfo);
+
+            
             MoveUpdatedComponent(delta, rotation, isSweep, ref hit);
+            // if (hit.isStartPenetrating)
+            // {
+            //     
+            //     MoveUpdatedComponent(delta, rotation, isSweep, ref hit);
+            // }
+            
         }
 
-        protected virtual void MoveUpdatedComponent(Vector3 delta, Quaternion rotation, bool isSweep, ref SweepHitReport hit)
+        protected virtual void MoveUpdatedComponent(Vector3 delta, Quaternion rotation, bool isSweep, ref HitResult hit)
         {
-            var targetPosition = _transientPosition + delta;
+            var startPosition = _transientPosition;
+            var targetPosition = startPosition + delta;
+            hit.isBlockingHit = false;
+            hit.time = 1f;
+
+            var minMovementDistance = isSweep ? Mathf.Pow(4f * 0.0001f, 2) : 0f;
+
+            if (delta.magnitude <= minMovementDistance)
+            {
+                hit.time = 0f;
+                return;
+            }
+            
             if (!isSweep)
             {
                 _transientPosition = targetPosition;
@@ -369,68 +584,703 @@ namespace Disc0ver
             }
             else
             {
-                var remainingMovementDirection = delta.normalized;
-                var remainMovementMagnitude = delta.magnitude;
-                var originalVelocityDirection = remainingMovementDirection;
-                int sweepMade = 0;
-                bool hitSomethingThisSweep = true;
-                var tmpMovedPosition = _transientPosition;
-                bool previousHitIsStable = false;
-
-                while (remainMovementMagnitude > 0f && sweepMade <= maxMovementSweepIterations)
+                var hitNumber = _capsule.CollisionSweep(startPosition, targetPosition, _transientRotation,
+                    _internalCharacterHits);
+                var blockingHitIndex = -1;
+                var blockingHitNormalDotDelta = float.MaxValue;
+                for (int i = 0; i < hitNumber; i++)
                 {
-                    bool foundClosestHit = false;
-                    Vector3 closestSweepHitPoint = default;
-                    Vector3 closestSweepHitNormal = default;
-                    float closestSweepHitDistance = 0f;
-                    Collider closestSweepHitCollider = null;
-
-                    
+                    var blockingHit = _internalCharacterHits[i];
+                    // 初始存在碰撞时，优先选择与运动方向相反的
+                    if (Physics.ComputePenetration(_capsule.capsule, startPosition,
+                            _transientRotation,
+                            blockingHit.collider, blockingHit.transform.position, blockingHit.transform.rotation,
+                            out var penetrationDirection, out var penetrationDistance))
+                    {
+                        var normalDotDelta = Vector3.Dot(penetrationDirection, delta);
+                        if (normalDotDelta < blockingHitNormalDotDelta)
+                        {
+                            blockingHitIndex = i;
+                            blockingHitNormalDotDelta = normalDotDelta;
+                            hit.isStartPenetrating = true;
+                        }
+                    }
+                    else if(blockingHitIndex == -1)
+                    {
+                        blockingHitIndex = i;
+                        hit.isBlockingHit = false;
+                        break;
+                    }
                 }
+
+                if (blockingHitIndex >= 0)
+                {
+                    var blockingHit = _internalCharacterHits[blockingHitIndex];
+                    hit.isBlockingHit = true;
+                    hit.hitInfo = blockingHit;
+                    hit.time = Mathf.Max(hit.hitInfo.distance - DCharacterControllerConst.SweepBackOffset, 0) / delta.magnitude;
+                    hit.traceStart = startPosition;
+                    hit.traceEnd = targetPosition;
+
+                    var moveDistance = hit.time * delta;
+                    if (moveDistance.sqrMagnitude <= minMovementDistance)
+                    {
+                        hit.time = 0;
+
+                    }
+                    
+                    targetPosition = startPosition + hit.time * delta;
+                    hit.location = targetPosition;
+                    Debug.DrawRay(hit.hitInfo.point, hit.hitInfo.normal, Color.red);
+                    if (hit.isStartPenetrating)
+                    {
+                        Debug.Log($"isStartPenetrating, collider {hit.hitInfo.collider.name}");
+                    }
+                }
+
+                _transientPosition = targetPosition;
+                _transientRotation = rotation;
+
             }
         }
+        
+        private void FindGround(Vector3 position, ref FindGroundResult outGroundResult, bool canUseCachedLocation, HitResult? downSweepResult)
+        {
+            var heightCheckAdjust = IsMovingOnGround() ? maxFloorDistance : -maxFloorDistance;
 
-        private Vector3 PenetrationAdjustment(Vector3 position, Quaternion rotation, Collider[] internalProbedColliders, ref OverlapInfo overlapInfo)
+            var floorSweepTraceDistance = Mathf.Max(maxFloorDistance, maxStepHeight + heightCheckAdjust);
+            var floorLineTraceDistance = floorSweepTraceDistance;
+            var needToValidateFloor = true;
+
+            if (floorLineTraceDistance > 0 || floorSweepTraceDistance > 0)
+            {
+                // TODO: not always check floor
+                ComputeGroundDist(position, floorLineTraceDistance, floorSweepTraceDistance, ref outGroundResult, _capsule.Radius, downSweepResult);
+            }
+
+            // // TODO: see if need to check perch
+            // if (outGroundResult.isBlockingHit && !outGroundResult.isLineTrace)
+            // {
+            //     var checkRadius = true;
+            //     if (ShouldComputePerchResult(outGroundResult.hitResult, checkRadius))
+            //     {
+            //         var maxPerchFloorDistance = Mathf.Max(maxFloorDistance, maxStepHeight + heightCheckAdjust);
+            //         if (IsMovingOnGround())
+            //             maxPerchFloorDistance += Mathf.Max(0, perchAdditionalHeight);
+            //
+            //         FindGroundResult perchGroundResult = new FindGroundResult();
+            //         if (ComputePerchResult(GetValidPerchRadius(), outGroundResult.hitResult, maxPerchFloorDistance,
+            //                 ref perchGroundResult))
+            //         {
+            //             
+            //         }
+            //     }
+            // }
+        }
+
+        private bool ShouldComputePerchResult(HitResult hitResult, bool checkRadius)
+        {
+            if (!hitResult.IsValidBlockingHit)
+                return false;
+            
+            if (GetPerchRadiusThreshold() <= SweepEdgeRejectDistance)
+                return false;
+
+            if (checkRadius)
+            {
+                var delta = hitResult.hitInfo.point - hitResult.location;
+                delta.y = 0;
+                if (delta.magnitude <= GetValidPerchRadius())
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private float GetPerchRadiusThreshold()
+        {
+            return Mathf.Max(0, PerchRadiusThreshold);
+        }
+
+        // private bool ComputePerchResult(float radius, HitResult inHit, float maxFloorDistance, ref FindGroundResult outPerchGroundResult)
+        // {
+        //     if (maxFloorDistance <= 0f)
+        //         return false;
+        //
+        //     var capsuleLocation = inHit.traceStart;
+        //
+        //     var inHitAboveBase = Mathf.Max(0, inHit.hitInfo.point.y - capsuleLocation.y);
+        //     
+        // }
+
+        private float GetValidPerchRadius()
+        {
+            var radius = _capsule.Radius;
+            return Mathf.Clamp(radius - GetPerchRadiusThreshold(), 0.11f, radius);
+        }
+
+        private void ComputeGroundDist(Vector3 capsuleLocation, float lineDistance, float sweepDistance, ref FindGroundResult outGroundResult, float sweepRadius, HitResult? downSweepResult)
+        {
+            var skipSweep = false;
+            if (downSweepResult != null && downSweepResult.Value.IsValidBlockingHit)
+            {
+                // 垂直向下
+                if (downSweepResult.Value.traceStart.y > downSweepResult.Value.traceEnd.y)
+                {
+                    if (IsWithinEdgeTolerance(downSweepResult.Value, _capsule))
+                    {
+                        var start2D = new Vector2(downSweepResult.Value.traceStart.x, downSweepResult.Value.traceStart.z);
+                        var end2D = new Vector2(downSweepResult.Value.traceEnd.x, downSweepResult.Value.traceEnd.z);
+                        if ((start2D - end2D).magnitude <= 1e-4)
+                        {
+                            skipSweep = true;
+
+                            var walkable = IsStableOnNormal(downSweepResult.Value.hitInfo.normal);
+                            var floorDistance = capsuleLocation.y - downSweepResult.Value.location.y;
+                            outGroundResult.SetFromSweep(downSweepResult.Value, floorDistance, walkable);
+
+                            if (walkable)
+                                return;
+                        }
+                    }
+                }
+            }
+
+            if (!skipSweep && sweepDistance > 0f && lineDistance > 0f)
+            {
+                var shrinkScale = 0.9f;
+                var shrinkScaleOverlap = 0.1f;
+                var shrinkHeight = (_capsule.Height * 0.5f - _capsule.Radius) * (1 - shrinkScale);
+                var traceDistance = sweepDistance + shrinkHeight;
+                Capsule capsule = new Capsule();
+                capsule.Init(this);
+                capsule.ResizeCapsule(sweepRadius, _capsule.Height - shrinkHeight * 2, capsuleConfig.capsuleYOffset);
+
+                HitResult hit = new HitResult(1f);
+                var blockingHit = FloorSweep(capsuleLocation, capsuleLocation + new Vector3(0, -traceDistance, 0),
+                    _transientRotation, ref hit, capsule);
+
+                if (blockingHit)
+                {
+                    if (hit.isStartPenetrating || !IsWithinEdgeTolerance(hit, capsule))
+                    {
+                        var radius = Mathf.Max(0f, capsule.Radius - SweepEdgeRejectDistance - 1e-4f);
+                        if (radius > 1e-4f)
+                        {
+                            shrinkHeight = (_capsule.Height * 0.5f - _capsule.Radius) *
+                                           (1 - shrinkScaleOverlap);
+                            traceDistance = sweepDistance + shrinkHeight;
+                            
+                            capsule.ResizeCapsule(radius, Mathf.Max(radius * 2, _capsule.Height - shrinkHeight * 2f), capsuleConfig.capsuleYOffset);
+                            hit.Reset(1f);
+                            
+                            blockingHit = FloorSweep(capsuleLocation, capsuleLocation + new Vector3(0, -traceDistance, 0),
+                                _transientRotation, ref hit, capsule);
+                        }
+                    }
+
+                    var maxPenetrationAdjust = Mathf.Max(maxFloorDistance, capsule.Radius);
+                    var sweepResult = Mathf.Max(-maxPenetrationAdjust, hit.time * traceDistance - shrinkHeight);
+                    outGroundResult.SetFromSweep(hit, sweepResult, false);
+                    if (hit.IsValidBlockingHit && IsStableOnNormal(hit.hitInfo.normal))
+                    {
+                        if (sweepResult <= sweepDistance)
+                        {
+                            outGroundResult.isWalkableFloor = true;
+                            return;
+                        }
+                    }
+                }
+            }
+
+            if (!outGroundResult.isBlockingHit && !outGroundResult.hitResult.isStartPenetrating)
+            {
+                outGroundResult.floorDistance = sweepDistance;
+                return;
+            }
+
+            if (lineDistance > 0f)
+            {
+                var shrinkHeight = _capsule.Height * 0.5f;
+                var lineTraceStart = capsuleLocation + _capsule.Center;
+                var traceDistance = lineDistance + shrinkHeight;
+                var down = new Vector3(0, -traceDistance, 0);
+
+                HitResult hit = new HitResult(1f);
+                var blockingHit = Physics.Linecast(lineTraceStart, lineTraceStart + down, out hit.hitInfo);
+                hit.Update(lineTraceStart, lineTraceStart + Vector3.down, hit.hitInfo, blockingHit, false);
+
+                if (blockingHit)
+                {
+                    if (hit.time > 0)
+                    {
+                        var maxPenetrationAdjust = Mathf.Max(maxFloorDistance, _capsule.Radius);
+                        var lineResult = Mathf.Max(-maxPenetrationAdjust, hit.time * traceDistance - shrinkHeight);
+
+                        outGroundResult.isBlockingHit = true;
+                        if (lineResult <= lineDistance && IsStableOnNormal(hit.hitInfo.normal))
+                        {
+                            outGroundResult.SetFromLineTrace(hit, outGroundResult.floorDistance, lineResult, true);
+                            return;
+                        }
+                    }
+                }
+            }
+
+            outGroundResult.isWalkableFloor = false;
+        }
+
+        private bool FloorSweep(Vector3 startPosition, Vector3 endPosition, Quaternion rotation, ref HitResult hit, Capsule capsule)
+        {
+            return capsule.CollisionFloorSweep(startPosition, endPosition, rotation, ref hit);
+        }
+        
+
+        private Vector3 PenetrationAdjustment1(Vector3 position, Quaternion rotation, Collider[] internalProbedColliders, ref OverlapInfo overlapInfo)
         {
             var offset = _capsule.PenetrationAdjustment(position, rotation, internalProbedColliders, ref overlapInfo);
             _transientPosition += offset;
             return offset;
         }
 
+        // private Vector3 GetPenetrationAdjustment(HitResult hit)
+        // {
+        //     if (!hit.isStartPenetrating)
+        //         return Vector3.zero;
+        //     
+        //     
+        // }
+        //
+        // private Vector3 PenetrationAdjustment()
+        // {
+        //     
+        // }
+
         private void Walking(float deltaTime, int iterations)
         {
             if (deltaTime < DCharacterControllerConst.MIN_TICK_TIME)
                 return;
             var remainingTime = deltaTime;
-            while (remainingTime >= DCharacterControllerConst.MIN_TICK_TIME)
+            while (remainingTime >= DCharacterControllerConst.MIN_TICK_TIME && iterations < maxSimulationIterations)
             {
+                iterations++;
+                var oldLocation = _transientPosition;
                 var timeTick = GetSimulationTimeStep(remainingTime, iterations);
                 remainingTime -= timeTick;
                 
                 controller.CalcVelocity(ref velocity, timeTick, 8f, false, 20f);
 
                 var delta = velocity * timeTick;
-                if (delta.magnitude < 1e-8)
+                StepDownResult? stepDownResult = new StepDownResult();
+                var zeroDelta = delta.magnitude < 1e-8;
+                if (zeroDelta)
                 {
                     remainingTime = 0f;
                 }
                 else
                 {
-                    // SafeMoveUpdatedComponent();
+                    MoveAlongGround(velocity, timeTick, ref stepDownResult);
+                }
+
+                if (stepDownResult != null && stepDownResult.Value.computedFloor)
+                {
+                    CurrentGround = stepDownResult.Value.GroundResult;
+                }
+                else
+                {
+                    FindGround(_transientPosition, ref CurrentGround, zeroDelta, null);
+                }
+
+
+                if ((_transientPosition - oldLocation).magnitude < 1e-4)
+                {
+                    remainingTime = 0f;
+                    break;
                 }
             }
         }
 
-        private void StepUp()
+        private void MoveAlongGround(Vector3 moveVelocity, float deltaTime, ref StepDownResult? outStepDownResult)
         {
+            var delta = moveVelocity * deltaTime;
+            // Debug.Log($"Move along floor, delta {delta}, velocity {moveVelocity}, deltaTime {deltaTime}");
+            Debug.DrawLine(_transientPosition, _transientPosition + moveVelocity, Color.black);
+            var hit = new HitResult();
+            float lastMoveSlice = deltaTime;
             
+            SafeMoveUpdatedComponent(delta, _transientRotation, true, ref hit);
+            
+            if (hit.isStartPenetrating)
+            {
+                Debug.Log("move start penetrating");
+                SlideAlongSurface(delta, 1f, hit.hitInfo.normal, ref hit, true);
+            }
+            else if(hit.IsValidBlockingHit)
+            {
+                Debug.Log($"move blocking, time {hit.time}");
+                var percentTimeApplied = hit.time;
+                if (hit.time > 0f && IsStableOnNormal(hit.hitInfo.normal))
+                {
+                    float percentRemain = 1 - hit.time;
+                    lastMoveSlice = percentRemain * lastMoveSlice;
+                    var vector = ComputeGroundMovementDelta(delta * percentRemain, hit, false);
+                    SafeMoveUpdatedComponent(vector, _transientRotation, true, ref hit);
+
+                    var secondHitPercent = hit.time * percentRemain;
+                    percentTimeApplied = Mathf.Clamp(percentTimeApplied + secondHitPercent, 0f, 1f);
+                }
+
+                if (hit.IsValidBlockingHit)
+                {
+                    if (CanStepUp(hit))
+                    {
+                        var gravDir = Vector3.down;
+                        var preStepUpLocation = _transientPosition;
+                        if (!StepUp(gravDir, delta * (1f - percentTimeApplied), ref hit, ref outStepDownResult))
+                        {
+                            SlideAlongSurface(delta, 1 - percentTimeApplied, hit.hitInfo.normal, ref hit, true);
+                        }
+                        else
+                        {
+                            if (!maintainHorizontalGroundVelocity)
+                            {
+                                var stepUpTimeSlice = (1 - percentTimeApplied) * deltaTime;
+                                if (stepUpTimeSlice > 0)
+                                {
+                                    velocity = (_transientPosition - preStepUpLocation) / stepUpTimeSlice;
+                                    velocity.y = 0;
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        SlideAlongSurface(delta, 1 - percentTimeApplied, hit.hitInfo.normal, ref hit, true);
+                    }
+                }
+            }
         }
 
-        private void SlideAlongSurface()
+        private Vector3 ComputeGroundMovementDelta(Vector3 delta, HitResult hit, bool isHitFromLineTrace)
         {
-            
+            var floorNormal = hit.hitInfo.normal;
+            if (IsStableOnNormal(floorNormal) && !isHitFromLineTrace)
+            {
+                var right = Vector3.Cross(delta, floorNormal);
+                var forward = Vector3.Cross(floorNormal, right).normalized;
+                
+                if (maintainHorizontalGroundVelocity)
+                {
+                    return forward * delta.magnitude;
+                }
+                else
+                {
+                    return Vector3.Project(delta, forward);
+                }
+            }
+
+            return delta;
         }
-        
+
+        private bool CanStepUp(HitResult hit)
+        {
+            if (!hit.IsValidBlockingHit)
+            {
+                return false;
+            }
+
+            // check for hit game object can be step up
+            
+            return true;
+        }
+
+        private bool StepUp(Vector3 gravDir, Vector3 delta, ref HitResult inHit, ref StepDownResult? outStepDownResult)
+        {
+            Debug.Log("Start step up");
+            var oldLocation = _transientPosition;
+            if (gravDir.magnitude < 1e-8)
+            {
+                return false;
+            }
+
+            var initialHitY = inHit.hitInfo.point.y;
+            // 碰撞在顶部,不爬升
+            if (initialHitY > oldLocation.y + _capsule.Height - _capsule.Radius)
+            {
+                return false;
+            }
+
+            var stepUpHeight = maxStepHeight;
+            var stepDownHeight = stepUpHeight;
+            var initialFloorBaseY = oldLocation.y;
+            var floorPointY = initialFloorBaseY;
+
+            if (IsMovingOnGround() && CurrentGround.isWalkableFloor)
+            {
+                var floorDist = Mathf.Max(0, CurrentGround.GetDistanceToFloor());
+                initialFloorBaseY -= floorDist;
+                stepUpHeight = Mathf.Max(stepUpHeight - floorDist, 0f);
+                stepDownHeight = maxStepHeight + maxFloorDistance * 2f;
+
+                // var isHitVerticalFace = inHit.hitInfo.point.y > inHit.location.y + _capsule.Radius;
+                var isHitVerticalFace = !IsWithinEdgeTolerance(inHit, _capsule); 
+                if (!CurrentGround.isLineTrace && !isHitVerticalFace)
+                {
+                    floorPointY = CurrentGround.hitResult.hitInfo.point.y;
+                }
+                else
+                {
+                    floorPointY -= floorDist;
+                }
+            }
+
+            // 撞击点在地板下
+            if (initialHitY <= initialFloorBaseY)
+            {
+                return false;
+            }
+
+            MovementCache movementCache = new MovementCache(this);
+
+            HitResult sweepUpHit = new HitResult(1f);
+            MoveUpdatedComponent(-gravDir.normalized * stepUpHeight, _transientRotation, true, ref sweepUpHit);
+
+            if (sweepUpHit.isStartPenetrating)
+            {
+                Debug.Log("[StepUp] sweep up fail");
+                movementCache.RevertMove();
+                return false;
+            }
+
+            HitResult hit = new HitResult(1f);
+            MoveUpdatedComponent(delta, _transientRotation, true, ref hit);
+
+            if (hit.isBlockingHit)
+            {
+                if (hit.isStartPenetrating)
+                {
+                    Debug.Log("[StepUp] sweep forward fail, start penetrate");
+                    movementCache.RevertMove();
+                    return false;
+                }
+
+                if (IsFalling())
+                    return true;
+
+                var forwardHitTime = hit.time;
+                var forwardSlideAmount = SlideAlongSurface(delta, 1 - forwardHitTime, hit.hitInfo.normal,
+                    ref hit, true);
+
+                if (IsFalling())
+                {
+                    Debug.Log("[StepUp] sweep forward fail, hit and slide and falling");
+                    movementCache.RevertMove();
+                    return false;
+                }
+
+                if (hit.time == 0f && forwardSlideAmount == 0f)
+                {
+                    Debug.Log("[StepUp] sweep forward fail, no move");
+                    movementCache.RevertMove();
+                    return false;
+                }
+            }
+
+            MoveUpdatedComponent(gravDir * stepDownHeight, _transientRotation, true, ref hit);
+            if (hit.isStartPenetrating)
+            {
+                Debug.Log("[StepUp] sweep down fail");
+                movementCache.RevertMove();
+                return false;
+            }
+
+            StepDownResult stepDownResult = new StepDownResult();
+            if (hit.IsValidBlockingHit)
+            {
+                var deltaY = hit.hitInfo.point.y - floorPointY;
+                if (deltaY > maxStepHeight)
+                {
+                    Debug.Log($"[StepUp] down fail, deltaY({deltaY}) greater than maxStepHeight{maxStepHeight}");
+                    movementCache.RevertMove();
+                    return false;
+                }
+
+                if (!IsStableOnNormal(hit.hitInfo.normal))
+                {
+                    if (Vector3.Dot(delta, hit.hitInfo.normal) < 0f)
+                    {
+                        Debug.Log($"[StepUp] down fail, unWalkable normal opposed then movement");
+                        movementCache.RevertMove();
+                        return false;
+                    }
+
+                    if (inHit.location.y > oldLocation.y)
+                    {
+                        Debug.Log($"[StepUp] down fail, unWalkable normal above old position");
+                        movementCache.RevertMove();
+                        return false;
+                    }
+                }
+
+                if (!IsWithinEdgeTolerance(hit, _capsule))
+                {
+                    Debug.Log($"[StepUp] down fail, hit point is in edge");
+                    movementCache.RevertMove();
+                    return false;
+                }
+
+                if (deltaY > 0f && !CanStepUp(hit))
+                {
+                    Debug.Log($"[StepUp] down fail, up on to surface can't step up");
+                    movementCache.RevertMove();
+                    return false;
+                }
+
+                if (outStepDownResult != null)
+                {
+                    FindGround(_transientPosition, ref stepDownResult.GroundResult, false, hit);
+                    if (hit.location.y > oldLocation.y)
+                    {
+                        if (!stepDownResult.GroundResult.isBlockingHit)
+                        {
+                            movementCache.RevertMove();
+                            return false;
+                        }
+                    }
+
+                    stepDownResult.computedFloor = true;
+                }
+                
+            }
+
+            if (outStepDownResult != null)
+            {
+                outStepDownResult = stepDownResult;
+            }
+
+            return true;
+        }
+
+        private float SlideAlongSurface(Vector3 delta, float time, Vector3 hitNormal, ref HitResult hit, bool handleImpact)
+        {
+            Debug.Log($"Slide along surface, collider: {hit.hitInfo.collider.name}");
+            if (!hit.isBlockingHit)
+                return 0f;
+
+            Vector3 normal = hitNormal;
+            if (IsMovingOnGround())
+            {
+                if (normal.y > 0)
+                {
+                    if (!IsStableOnNormal(normal))
+                    {
+                        normal.y = 0;
+                    }
+                }
+            }
+            else if (normal.y < -1e-4)
+            {
+                if (CurrentGround.floorDistance < minFloorDistance && CurrentGround.isBlockingHit)
+                {
+                    var floorNormal = CurrentGround.hitResult.hitInfo.normal;
+                    var floorOpposedToMovement = (Vector3.Dot(delta, floorNormal) < 0f) && (floorNormal.y < 1f - 1e-4f);
+                    if (floorOpposedToMovement)
+                    {
+                        normal = floorNormal;
+                    }
+
+                    normal.y = 0;
+                }
+            }
+            
+            Debug.Log($"slide normal {normal}");
+            return InternalSlideAlongSurface(delta, time, normal.normalized, ref hit, handleImpact);
+        }
+
+        private float InternalSlideAlongSurface(Vector3 delta, float time, Vector3 normal, ref HitResult hit,
+            bool handleImpact)
+        {
+            if (!hit.isBlockingHit)
+                return 0f;
+
+            var percentTimeApplied = 0f;
+            var oldHitNormal = normal;
+
+            var slideDelta = ComputeSlideVector(delta, time, normal, hit);
+            Debug.DrawRay(hit.hitInfo.point, slideDelta, Color.magenta);
+
+            if (Vector3.Dot(slideDelta, delta) > 0)
+            {
+                SafeMoveUpdatedComponent(slideDelta, _transientRotation, true, ref hit);
+
+                var firstHitPercent = hit.time;
+                percentTimeApplied = firstHitPercent;
+                if (hit.IsValidBlockingHit)
+                {
+                    if (handleImpact)
+                    {
+                        
+                    }
+                    
+                    Debug.Log($"Slide along next surface, collider: {hit.hitInfo.collider.name}");
+                    slideDelta = TwoWallAdjust(slideDelta, ref hit, oldHitNormal);
+                    Debug.DrawRay(hit.hitInfo.point, slideDelta, Color.magenta);
+                    if (slideDelta.magnitude > 1e-4f && Vector3.Dot(slideDelta, delta) > 0f)
+                    {
+                        SafeMoveUpdatedComponent(slideDelta, _transientRotation, true, ref hit);
+                        var secondPercent = hit.time * (1 - firstHitPercent);
+                        percentTimeApplied += secondPercent;
+
+                        if (handleImpact && hit.isBlockingHit)
+                        {
+                            
+                        }
+                    }
+                }
+
+                return Mathf.Clamp(percentTimeApplied, 0f, 1f);
+            }
+
+            return 0;
+        }
+
+        private Vector3 TwoWallAdjust(Vector3 delta, ref HitResult hit, Vector3 oldHitNormal)
+        {
+            var hitNormal = hit.hitInfo.normal;
+            var desireDir = delta;
+
+            // 90 or less corner, use cross product for direction
+            if (Vector3.Dot(oldHitNormal, hitNormal) <= 0f)
+            {
+                var newDir = Vector3.Cross(hitNormal, oldHitNormal).normalized;
+                delta = Vector3.Dot(delta, newDir) * (1 - hit.time) * newDir;
+                if (Vector3.Dot(desireDir, delta) < 0f)
+                    delta = -delta;
+            }
+            else
+            {
+                delta = ComputeSlideVector(delta, 1 - hit.time, hitNormal, hit);
+                if (Vector3.Dot(delta, desireDir) <= 0f)
+                {
+                    delta = Vector3.zero;
+                }
+                else if (Mathf.Abs(Vector3.Dot(hitNormal, oldHitNormal) - 1f) < 1e-4)
+                {
+                    delta += hitNormal * 0.01f;
+                }
+            }
+
+            return delta;
+        }
+
+        private Vector3 ComputeSlideVector(Vector3 delta, float time, Vector3 normal, HitResult hit)
+        {
+            return Vector3.ProjectOnPlane(delta, normal) * time;
+        }
+
+
 
         private float GetSimulationTimeStep(float remainingTime, int iterations)
         {
@@ -458,9 +1308,9 @@ namespace Disc0ver
         public Vector3 GetObstructionNormal(Vector3 hitNormal, bool stableOnHit)
         {
             var obstructionNormal = hitNormal;
-            if (groundingStatus.IsStableOnGround && IsGround() && IsGround() && !stableOnHit)
+            if (CurrentGround.isWalkableFloor && IsMovingOnGround() && !stableOnHit)
             {
-                Vector3 obstructionLeftAlongGround = Vector3.Cross(groundingStatus.GroundNormal, obstructionNormal).normalized;
+                Vector3 obstructionLeftAlongGround = Vector3.Cross(CurrentGround.hitResult.hitInfo.normal, obstructionNormal).normalized;
                 obstructionNormal = Vector3.Cross(obstructionLeftAlongGround, transform.up).normalized;
             }
 
@@ -473,9 +1323,29 @@ namespace Disc0ver
             return obstructionNormal;
         }
 
-        public bool IsGround()
+        public bool IsMovingOnGround()
         {
             return true;
+        }
+
+        public bool IsFalling()
+        {
+            return false;
+        }
+
+        public void RevertMove(MovementCache cache)
+        {
+            _transientPosition = cache.position;
+            _transientRotation = cache.rotation;
+            CurrentGround = cache.oldGround;
+        }
+
+        private bool IsWithinEdgeTolerance(HitResult hit, Capsule capsule)
+        {
+            var delta = hit.hitInfo.point - hit.location;
+            delta.y = 0;
+            var reducedRadius = Mathf.Max(SweepEdgeRejectDistance, capsule.Radius - SweepEdgeRejectDistance);
+            return delta.magnitude < reducedRadius;
         }
     }
 }

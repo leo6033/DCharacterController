@@ -16,9 +16,9 @@ namespace Disc0ver
         public CapsuleCollider capsule;
         private MovementComponent _movementComponent;
         
-        private float capsuleHeight;
-        private float capsuleRadius;
-        private float capsuleYOffset;
+        private float _capsuleHeight;
+        private float _capsuleRadius;
+        private float _capsuleYOffset;
         
         private Vector3 _capsuleBottom;
         private Vector3 _capsuleTop;
@@ -26,25 +26,44 @@ namespace Disc0ver
         private Vector3 _capsuleCenterBottom;
         private Vector3 _capsuleCenterTop;
 
-        public void Init(MovementComponent movementComponent)
+        private RaycastHit[] _raycastHits = new RaycastHit[16];
+
+        public Vector3 CapsuleBottom => _capsuleBottom;
+        public Vector3 CapsuleTop => _capsuleTop;
+        public Vector3 CapsuleCenterBottom => _capsuleCenterBottom;
+        public Vector3 CapsuleCenterTop => _capsuleCenterTop;
+        public Vector3 Center => _capsuleCenter;
+        public float Radius => _capsuleRadius;
+        public float Height => _capsuleHeight;
+
+        public void Init(MovementComponent movementComponent, bool changeCollider = false)
         {
             _movementComponent = movementComponent;
             capsule = _movementComponent.GetComponent<CapsuleCollider>();
             var capsuleConfig = movementComponent.capsuleConfig;
-            ResizeCapsule(capsuleConfig.capsuleRadius, capsuleConfig.capsuleHeight, capsuleConfig.capsuleYOffset);
+            ResizeCapsule(capsuleConfig.capsuleRadius, capsuleConfig.capsuleHeight, capsuleConfig.capsuleYOffset, changeCollider);
         }
 
-        public void ResizeCapsule(float radius, float height, float yOffset)
+        public void ResizeCapsule(float radius, float height, float yOffset, bool changeCollider = false)
         {
             height = Mathf.Max(height, radius * 2 + 0.01f);
 
-            capsule.radius = radius;
-            capsule.height = height;
-            capsule.center = new Vector3(0, yOffset, 0);
+            if (changeCollider)
+            {
+                capsule.radius = radius;
+                capsule.height = height;
+                capsule.center = new Vector3(0, yOffset, 0);
+            }
 
-            capsuleHeight = height;
-            capsuleRadius = radius;
-            capsuleYOffset = yOffset;
+            _capsuleHeight = height;
+            _capsuleRadius = radius;
+            _capsuleYOffset = yOffset;
+
+            _capsuleCenter = capsule.center;
+            _capsuleBottom = _capsuleCenter - Vector3.up * height * 0.5f;
+            _capsuleTop = _capsuleCenter + Vector3.up * height * 0.5f;
+            _capsuleCenterBottom = _capsuleBottom + Vector3.up * radius;
+            _capsuleCenterTop = _capsuleTop - Vector3.up * radius;
         }
 
         /// <summary>
@@ -95,18 +114,18 @@ namespace Disc0ver
             return position - startPosition;
         }
 
-        protected virtual int CollisionOverlap(Vector3 position, Quaternion rotation, Collider[] overlappedColliders, float inflate = 0f, bool acceptOnlyStableGroundLayer = false, QueryTriggerInteraction queryTriggerInteraction = QueryTriggerInteraction.Ignore)
+        public virtual int CollisionOverlap(Vector3 position, Quaternion rotation, Collider[] overlappedColliders, float inflate = 0f, bool acceptOnlyStableGroundLayer = false, QueryTriggerInteraction queryTriggerInteraction = QueryTriggerInteraction.Ignore)
         {
             int queryLayers = _movementComponent.collidableLayers;
             if (acceptOnlyStableGroundLayer)
                 queryLayers &= _movementComponent.stableGroundLayer;
 
-            var offset = rotation * Vector3.up * (capsuleHeight * 0.5f - capsuleRadius + inflate);
-            var bottom = position - offset;
-            var top = position + offset;
+            var offset = rotation * Vector3.up * inflate;
+            var bottom = position + rotation * CapsuleCenterBottom - offset;
+            var top = position + rotation * CapsuleCenterTop + offset;
 
             int nbUnfilteredHits = Physics.OverlapCapsuleNonAlloc(
-                bottom, top, capsuleRadius + inflate, overlappedColliders, queryLayers, queryTriggerInteraction);
+                bottom, top, _capsuleRadius + inflate, overlappedColliders, queryLayers, queryTriggerInteraction);
 
             int nbHits = nbUnfilteredHits;
             for (int i = nbUnfilteredHits - 1; i >= 0; i--)
@@ -122,28 +141,30 @@ namespace Disc0ver
             return nbHits;
         }
 
-        public int CollisionSweep(Vector3 startPosition, Vector3 endPosition, Quaternion rotation,  out RaycastHit closestHit, RaycastHit[] hits, float inflate = 0f, bool acceptOnlyStableGroundLayer = false, QueryTriggerInteraction queryTriggerInteraction = QueryTriggerInteraction.Ignore)
+        public int CollisionSweep(Vector3 startPosition, Vector3 endPosition, Quaternion rotation, RaycastHit[] hits, float inflate = 0f, bool acceptOnlyStableGroundLayer = false, QueryTriggerInteraction queryTriggerInteraction = QueryTriggerInteraction.Ignore)
         {
             int queryLayers = _movementComponent.collidableLayers;
             if (acceptOnlyStableGroundLayer)
                 queryLayers &= _movementComponent.stableGroundLayer;
             
-            var offset = rotation * Vector3.up * (capsuleHeight * 0.5f - capsuleRadius + inflate);
-            var bottom = startPosition - offset;
-            var top = startPosition + offset;
-
+            var offset = rotation * Vector3.up * inflate;
             var direction = (endPosition - startPosition).normalized;
+
+            var bottom = startPosition + rotation * CapsuleCenterBottom - offset - direction * DCharacterControllerConst.SweepBackOffset;
+            var top = startPosition + rotation * CapsuleCenterTop + offset - direction * DCharacterControllerConst.SweepBackOffset;
+            
+            Debug.DrawLine(bottom, top, Color.blue);
+            Debug.DrawLine(endPosition, startPosition, Color.blue);
+
             var distance = (endPosition - startPosition).magnitude;
 
             int nbHits = 0;
             int nbUnfilteredHits = Physics.CapsuleCastNonAlloc(
-                bottom, top, capsuleRadius + inflate,
-                direction, hits, distance,
+                bottom, top, _capsuleRadius + inflate,
+                direction, hits, distance + DCharacterControllerConst.SweepBackOffset,
                 queryLayers, queryTriggerInteraction
             );
 
-            closestHit = new RaycastHit();
-            float closestDistance = Mathf.Infinity;
             nbHits = nbUnfilteredHits;
             for (int i = nbUnfilteredHits - 1; i >= 0; i--)
             {
@@ -157,17 +178,77 @@ namespace Disc0ver
                         hits[i] = hits[nbHits];
                     }
                 }
-                else
+            }
+            
+            Sort(hits, nbHits);
+
+            return nbHits;
+        }
+
+        private void Sort(RaycastHit[] hits, int nbHits)
+        {
+            for (int i = 0; i < nbHits; i++)
+            {
+                for (int j = i + 1; j < nbHits; j++)
                 {
-                    if (hit.distance < closestDistance)
+                    if (hits[i].distance > hits[j].distance)
                     {
-                        closestHit = hit;
-                        closestDistance = hit.distance;
+                        (hits[j], hits[i]) = (hits[i], hits[j]);
+                    }
+                }
+            }
+        }
+
+        public bool CollisionFloorSweep(Vector3 startPosition, Vector3 endPosition, Quaternion rotation,
+            ref HitResult hit, bool acceptOnlyStableGroundLayer = false,
+            QueryTriggerInteraction queryTriggerInteraction = QueryTriggerInteraction.Ignore)
+        {
+            int queryLayers = _movementComponent.collidableLayers;
+            if (acceptOnlyStableGroundLayer)
+                queryLayers &= _movementComponent.stableGroundLayer;
+            
+            var direction = (endPosition - startPosition).normalized;
+
+            var bottom = startPosition + rotation * CapsuleCenterBottom - direction * DCharacterControllerConst.SweepBackOffset;
+            var top = startPosition + rotation * CapsuleCenterTop - direction * DCharacterControllerConst.SweepBackOffset;
+
+            var distance = (endPosition - startPosition).magnitude;
+
+            int nbHits = 0;
+            int nbUnfilteredHits = Physics.CapsuleCastNonAlloc(
+                bottom, top, Radius ,
+                direction, _raycastHits, distance + DCharacterControllerConst.SweepBackOffset,
+                queryLayers, queryTriggerInteraction
+            );
+            
+            float closestDistance = float.MaxValue;
+            var index = -1;
+            for (int i = 0; i < nbUnfilteredHits; i++)
+            {
+                if (CheckIfColliderValidForCollisions(_raycastHits[i].collider))
+                {
+                    if (_raycastHits[i].distance < closestDistance)
+                    {
+                        index = i;
+                        closestDistance = _raycastHits[i].distance;
                     }
                 }
             }
 
-            return nbHits;
+            if (index == -1)
+                return false;
+
+            var closestHit = _raycastHits[index];
+            closestHit.distance = Mathf.Max(0, closestHit.distance - DCharacterControllerConst.SweepBackOffset);
+            hit.isBlockingHit = true;
+            hit.isStartPenetrating = closestHit.distance <= 0;
+            hit.time = closestHit.distance / distance;
+            hit.traceStart = startPosition;
+            hit.traceEnd = endPosition;
+            hit.hitInfo = closestHit;
+            hit.location = startPosition + hit.time * (endPosition - startPosition);
+
+            return true;
         }
 
         private bool CheckIfColliderValidForCollisions(Collider collider)
