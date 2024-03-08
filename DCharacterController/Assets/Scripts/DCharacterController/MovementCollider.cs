@@ -168,6 +168,7 @@ namespace Disc0ver
             nbHits = nbUnfilteredHits;
             for (int i = nbUnfilteredHits - 1; i >= 0; i--)
             {
+                hits[i].distance -= DCharacterControllerConst.SweepBackOffset;
                 var hit = hits[i];
 
                 if (hit.distance <= 0 || !CheckIfColliderValidForCollisions(hit.collider))
@@ -209,15 +210,15 @@ namespace Disc0ver
             
             var direction = (endPosition - startPosition).normalized;
 
-            var bottom = startPosition + rotation * CapsuleCenterBottom - direction * DCharacterControllerConst.SweepBackOffset;
-            var top = startPosition + rotation * CapsuleCenterTop - direction * DCharacterControllerConst.SweepBackOffset;
+            var bottom = startPosition + rotation * CapsuleCenterBottom - direction * DCharacterControllerConst.GroundSweepBackOffset;
+            var top = startPosition + rotation * CapsuleCenterTop - direction * DCharacterControllerConst.GroundSweepBackOffset;
 
             var distance = (endPosition - startPosition).magnitude;
 
             int nbHits = 0;
             int nbUnfilteredHits = Physics.CapsuleCastNonAlloc(
                 bottom, top, Radius ,
-                direction, _raycastHits, distance + DCharacterControllerConst.SweepBackOffset,
+                direction, _raycastHits, distance + DCharacterControllerConst.GroundSweepBackOffset,
                 queryLayers, queryTriggerInteraction
             );
             
@@ -231,6 +232,7 @@ namespace Disc0ver
                     {
                         index = i;
                         closestDistance = _raycastHits[i].distance;
+                        _raycastHits[i].distance -= DCharacterControllerConst.GroundSweepBackOffset;
                     }
                 }
             }
@@ -239,7 +241,7 @@ namespace Disc0ver
                 return false;
 
             var closestHit = _raycastHits[index];
-            closestHit.distance = Mathf.Max(0, closestHit.distance - DCharacterControllerConst.SweepBackOffset);
+            closestHit.distance = Mathf.Max(0, closestHit.distance);
             hit.isBlockingHit = true;
             hit.isStartPenetrating = closestHit.distance <= 0;
             hit.time = closestHit.distance / distance;

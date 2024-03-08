@@ -281,7 +281,8 @@ namespace Disc0ver
         public static readonly float MIN_TICK_TIME = 1e-6f;
         public static readonly float BrakingSubStepTime = 1.0f / 33.0f;
         public static readonly float CollisionOffset = 0.01f;
-        public static readonly float SweepBackOffset = 0.01f;
+        public static readonly float GroundSweepBackOffset = 0.1f;
+        public static readonly float SweepBackOffset = 0.002f;
     }
 
     
@@ -566,6 +567,7 @@ namespace Disc0ver
         {
             var startPosition = _transientPosition;
             var targetPosition = startPosition + delta;
+            // var isPreBlockingHit = hit.isBlockingHit;
             hit.isBlockingHit = false;
             hit.time = 1f;
 
@@ -591,6 +593,8 @@ namespace Disc0ver
                 for (int i = 0; i < hitNumber; i++)
                 {
                     var blockingHit = _internalCharacterHits[i];
+                    // if(isPreBlockingHit && hit.hitInfo.collider == blockingHit.collider)
+                        // continue;
                     // 初始存在碰撞时，优先选择与运动方向相反的
                     if (Physics.ComputePenetration(_capsule.capsule, startPosition,
                             _transientRotation,
@@ -608,7 +612,6 @@ namespace Disc0ver
                     else if(blockingHitIndex == -1)
                     {
                         blockingHitIndex = i;
-                        hit.isBlockingHit = false;
                         break;
                     }
                 }
@@ -1107,22 +1110,22 @@ namespace Disc0ver
                     return false;
                 }
 
-                if (!IsStableOnNormal(hit.hitInfo.normal))
-                {
-                    if (Vector3.Dot(delta, hit.hitInfo.normal) < 0f)
-                    {
-                        Debug.Log($"[StepUp] down fail, unWalkable normal opposed then movement");
-                        movementCache.RevertMove();
-                        return false;
-                    }
-
-                    if (inHit.location.y > oldLocation.y)
-                    {
-                        Debug.Log($"[StepUp] down fail, unWalkable normal above old position");
-                        movementCache.RevertMove();
-                        return false;
-                    }
-                }
+                // if (!IsStableOnNormal(hit.hitInfo.normal))
+                // {
+                //     if (Vector3.Dot(delta, hit.hitInfo.normal) < 0f)
+                //     {
+                //         Debug.Log($"[StepUp] down fail, unWalkable normal opposed then movement");
+                //         movementCache.RevertMove();
+                //         return false;
+                //     }
+                //
+                //     if (inHit.location.y > oldLocation.y)
+                //     {
+                //         Debug.Log($"[StepUp] down fail, unWalkable normal above old position");
+                //         movementCache.RevertMove();
+                //         return false;
+                //     }
+                // }
 
                 if (!IsWithinEdgeTolerance(hit, _capsule))
                 {
@@ -1209,7 +1212,7 @@ namespace Disc0ver
             var oldHitNormal = normal;
 
             var slideDelta = ComputeSlideVector(delta, time, normal, hit);
-            Debug.DrawRay(hit.hitInfo.point, slideDelta, Color.magenta);
+            Debug.DrawRay(hit.hitInfo.point, slideDelta * 100, Color.magenta);
 
             if (Vector3.Dot(slideDelta, delta) > 0)
             {
@@ -1226,7 +1229,7 @@ namespace Disc0ver
                     
                     Debug.Log($"Slide along next surface, collider: {hit.hitInfo.collider.name}");
                     slideDelta = TwoWallAdjust(slideDelta, ref hit, oldHitNormal);
-                    Debug.DrawRay(hit.hitInfo.point, slideDelta, Color.magenta);
+                    Debug.DrawRay(hit.hitInfo.point, slideDelta * 100, Color.magenta);
                     if (slideDelta.magnitude > 1e-4f && Vector3.Dot(slideDelta, delta) > 0f)
                     {
                         SafeMoveUpdatedComponent(slideDelta, _transientRotation, true, ref hit);
@@ -1269,6 +1272,33 @@ namespace Disc0ver
                 else if (Mathf.Abs(Vector3.Dot(hitNormal, oldHitNormal) - 1f) < 1e-4)
                 {
                     delta += hitNormal * 0.01f;
+                }
+            }
+
+            if (IsMovingOnGround())
+            {
+                if (delta.y > 0)
+                {
+                    if (IsStableOnNormal(hit.hitInfo.normal) && hit.hitInfo.normal.y > 1e-4f)
+                    {
+                        var time = 1 - hit.time;
+                        var scaledDelta = delta.normalized * desireDir.magnitude;
+                        delta = new Vector3(desireDir.x, scaledDelta.y / hitNormal.y, desireDir.z) * time;
+                        if (delta.y > maxStepHeight)
+                        {
+                            var rescale = maxStepHeight / delta.y;
+                            delta *= rescale;
+                        }
+                    }
+                    else
+                    {
+                        delta.y = 0;
+                    }
+                }
+                else if(delta.y < 0)
+                {
+                    if (CurrentGround.floorDistance < minFloorDistance && CurrentGround.isBlockingHit)
+                        delta.y = 0;
                 }
             }
 
