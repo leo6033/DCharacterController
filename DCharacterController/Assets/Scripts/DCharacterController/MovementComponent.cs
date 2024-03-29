@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using Unity.VisualScripting;
 using UnityEditor.UI;
 using UnityEngine;
+using UnityEngine.Assertions.Must;
 
 namespace Disc0ver
 {
@@ -196,6 +197,16 @@ namespace Disc0ver
                 floorDistance = sweepFloorDist;
             }
         }
+
+        public void Clear()
+        {
+            isBlockingHit = false;
+            isWalkableFloor = false;
+            isLineTrace = false;
+            floorDistance = 0f;
+            lineDistance = 0f;
+            hitResult.Reset();
+        }
     }
 
     public struct StepDownResult
@@ -319,6 +330,12 @@ namespace Disc0ver
         public float PerchRadiusThreshold = 0.15f;
 
         public float perchAdditionalHeight = 0.05f;
+
+        public float fallingLateralFriction = 0.1f;
+
+        public float gravity = 5f;
+
+        public bool canWalkOffLedges = true;
         
         [Header("Ground Setting")] 
         [Tooltip("可站立的地面 layer")]
@@ -362,6 +379,7 @@ namespace Disc0ver
         private RaycastHit[] _internalCharacterHits;
         private Collider[] _internalProbedColliders;
         private OverlapInfo _overlapInfo;
+        private MoveMode _movementMode;
 
         [NonSerialized] 
         public Vector3 initialTickPosition;
@@ -445,6 +463,7 @@ namespace Disc0ver
             _overlapInfo = new OverlapInfo(maxRigidbodyOverlapsCount);
             _internalCharacterHits = new RaycastHit[maxHitsBudget];
             _internalProbedColliders = new Collider[maxCollisionBudget];
+            _movementMode = MoveMode.MoveNone;
         }
 
         private void FixedUpdate()
@@ -537,9 +556,87 @@ namespace Disc0ver
         //     
         // }
 
+        private void StartNewPhysics(float deltaTime, int iterations)
+        {
+            if ((deltaTime < DCharacterControllerConst.MIN_TICK_TIME) || (iterations >= maxSimulationIterations) || !HasValidData())
+            {
+                return;
+            }
+
+            switch (_movementMode)
+            {
+                case MoveMode.MoveNone:
+                    break;
+                case MoveMode.MoveWalking:
+                    Walking(deltaTime, iterations);
+                    break;
+                case MoveMode.MoveFalling:
+                    Falling(deltaTime, iterations);
+                    break;
+            }
+        }
+
+        private bool HasValidData()
+        {
+            return true;
+        }
+        
+        private void SetMovementMode(MoveMode newMovementMode)
+        {
+            if (newMovementMode == _movementMode)
+                return;
+            
+            Debug.Log($"movement move change {newMovementMode.ToString()}");
+            var preMovementMode = _movementMode;
+            _movementMode = newMovementMode;
+
+            OnMovementModeChanged(preMovementMode, _movementMode);
+        }
+
+        private void OnMovementModeChanged(MoveMode preMovementMode, MoveMode newMovementMode)
+        {
+            if (newMovementMode == MoveMode.MoveWalking)
+            {
+                velocity.y = 0;
+                FindGround(_transientPosition, ref CurrentGround, false, null);
+                AdjustFloorHeight();
+            }
+            else
+            {
+                CurrentGround.Clear();
+                
+                if (newMovementMode == MoveMode.MoveFalling)
+                {
+                    // controller.Falling();
+                }
+
+                if (newMovementMode == MoveMode.MoveNone)
+                {
+                    
+                }
+            }
+            
+            
+        }
+        
         private void PerformMovement(float deltaTime)
         {
-            Walking(deltaTime, 0);
+            if (_movementMode == MoveMode.MoveNone)
+            {
+                if (controller.inputVec.magnitude > 0)
+                {
+                    _movementMode = MoveMode.MoveWalking;
+                }
+            }
+
+            if (_movementMode == MoveMode.MoveWalking)
+            {
+                Walking(deltaTime, 0);
+            }
+            else if (_movementMode == MoveMode.MoveFalling)
+            {
+                Falling(deltaTime, 0);
+            }
         }
 
         /// <summary>
@@ -835,6 +932,48 @@ namespace Disc0ver
             outGroundResult.isWalkableFloor = false;
         }
 
+        private void AdjustFloorHeight()
+        {
+            if (!CurrentGround.isWalkableFloor)
+                return;
+
+            var oldFloorDist = CurrentGround.floorDistance;
+            if (CurrentGround.isLineTrace)
+            {
+                if (oldFloorDist < minFloorDistance && CurrentGround.lineDistance >= minFloorDistance)
+                    return;
+                else
+                    oldFloorDist = CurrentGround.lineDistance;
+            }
+
+            if (oldFloorDist < minFloorDistance || oldFloorDist > maxFloorDistance)
+            {
+                HitResult adjustHit = new HitResult(1f);
+                var initialY = _transientPosition.y;
+                var avgFloorDist = (minFloorDistance + maxFloorDistance) / 2f;
+                var moveDistance = avgFloorDist - oldFloorDist;
+                SafeMoveUpdatedComponent(new Vector3(0, moveDistance, 0), _transientRotation, true, ref adjustHit);
+
+                var currentY = _transientPosition.y;
+                if (!adjustHit.IsValidBlockingHit)
+                {
+                    CurrentGround.floorDistance += moveDistance;
+                }
+                else if (moveDistance > 0f)
+                {
+                    CurrentGround.floorDistance += currentY - initialY;
+                }
+                else
+                {
+                    CurrentGround.floorDistance = currentY - adjustHit.location.y;
+                    if (IsStableOnNormal(adjustHit.hitInfo.normal))
+                    {
+                        CurrentGround.SetFromSweep(adjustHit, CurrentGround.floorDistance, true);
+                    }
+                }
+            }
+        }
+        
         private bool FloorSweep(Vector3 startPosition, Vector3 endPosition, Quaternion rotation, ref HitResult hit, Capsule capsule)
         {
             return capsule.CollisionFloorSweep(startPosition, endPosition, rotation, ref hit);
@@ -848,30 +987,21 @@ namespace Disc0ver
             return offset;
         }
 
-        // private Vector3 GetPenetrationAdjustment(HitResult hit)
-        // {
-        //     if (!hit.isStartPenetrating)
-        //         return Vector3.zero;
-        //     
-        //     
-        // }
-        //
-        // private Vector3 PenetrationAdjustment()
-        // {
-        //     
-        // }
-
         private void Walking(float deltaTime, int iterations)
         {
             if (deltaTime < DCharacterControllerConst.MIN_TICK_TIME)
                 return;
             var remainingTime = deltaTime;
+            var checkFall = false;
+            var triedLedgeMove = false;
+            var stepUp = false;
             while (remainingTime >= DCharacterControllerConst.MIN_TICK_TIME && iterations < maxSimulationIterations)
             {
                 iterations++;
                 var oldLocation = _transientPosition;
                 var timeTick = GetSimulationTimeStep(remainingTime, iterations);
                 remainingTime -= timeTick;
+                var oldGround = CurrentGround;
                 
                 controller.CalcVelocity(ref velocity, timeTick, 8f, false, 20f);
 
@@ -890,12 +1020,46 @@ namespace Disc0ver
                 if (stepDownResult != null && stepDownResult.Value.computedFloor)
                 {
                     CurrentGround = stepDownResult.Value.GroundResult;
+                    stepUp = true;
                 }
                 else
                 {
+                    stepUp = false;
                     FindGround(_transientPosition, ref CurrentGround, zeroDelta, null);
                 }
-
+                
+                // TODO: 完善悬崖判断
+                var checkLedges = !CanWalkOffLedges();
+                if (checkLedges && !CurrentGround.isWalkableFloor)
+                {
+                    // var gravDir = new Vector3(0, -1, 0);
+                    // var newDelta = triedLedgeMove ? Vector3.zero : GetLedgeMove(oldLocation, delta, gravDir);
+                    
+                }
+                else
+                {
+                    if (CurrentGround.isWalkableFloor)
+                    {
+                        AdjustFloorHeight();
+                    }
+                    else if (CurrentGround.hitResult.isStartPenetrating && remainingTime <= 0f)
+                    {
+                        HitResult hit = CurrentGround.hitResult;
+                        hit.traceEnd = hit.traceStart + new Vector3(0, maxFloorDistance, 0);
+                        PenetrationAdjustment1(_transientPosition, _transientRotation, _internalProbedColliders,
+                            ref _overlapInfo);
+                    }
+                
+                    // 下落判断
+                    if (!stepUp && !CurrentGround.isWalkableFloor && !CurrentGround.hitResult.isStartPenetrating)
+                    {
+                        if (CheckFall(oldGround, CurrentGround.hitResult, delta, oldLocation, remainingTime, timeTick,
+                                iterations, controller.Jump))
+                        {
+                            return;
+                        }
+                    }
+                }
 
                 if ((_transientPosition - oldLocation).magnitude < 1e-4)
                 {
@@ -904,7 +1068,233 @@ namespace Disc0ver
                 }
             }
         }
+        
 
+        // private Vector3 GetLedgeMove(Vector3 oldLocation, Vector3 delta, Vector3 gravyDir)
+        // {
+        //     if (!HasValidData() || delta.magnitude < 1e-4)
+        //     {
+        //         return Vector3.zero;
+        //     }
+        //
+        //     var sideDir = new Vector3(delta.z, 0, -delta.x);
+        //     if()
+        // }
+
+        private void Falling(float deltaTime, int iterations)
+        {
+            if (deltaTime < DCharacterControllerConst.MIN_TICK_TIME)
+                return;
+            var remainTime = deltaTime;
+            while ((remainTime >= DCharacterControllerConst.MIN_TICK_TIME) && (iterations < maxSimulationIterations))
+            {
+                iterations++;
+                var timeTick = GetSimulationTimeStep(remainTime, iterations);
+                remainTime -= timeTick;
+
+                var oldLocation = _transientPosition;
+                var oldRotation = _transientRotation;
+                var oldVelocity = velocity;
+                
+                velocity.y = 0;
+                controller.CalcVelocity(ref velocity, deltaTime, fallingLateralFriction, false, 20f);
+                velocity.y = oldVelocity.y;
+
+                var vGravity = new Vector3(0, -gravity, 0);
+                var gravityTime = timeTick;
+                var endingJumpForce = false;
+                if (controller.jumpForceTimeRemain > 0f)
+                {
+                    var jumpForceTime = Mathf.Min(controller.jumpForceTimeRemain, timeTick);
+                    gravityTime = Mathf.Max(0f, timeTick - jumpForceTime);
+
+                    controller.jumpForceTimeRemain -= jumpForceTime;
+                    if (controller.jumpForceTimeRemain <= 0f)
+                    {
+                        endingJumpForce = true;
+                    }
+                }
+
+                velocity = NewFallVelocity(velocity, vGravity, gravityTime);
+
+                var adjusted = 0.5f * (oldVelocity + velocity) * timeTick;
+                HitResult hitResult = new HitResult();
+                
+                SafeMoveUpdatedComponent(adjusted, _transientRotation, true, ref hitResult);
+
+                if (!HasValidData())
+                    return;
+
+                var lastMoveTimeSlice = timeTick;
+                var subTimeTickRemain = timeTick * (1 - hitResult.time);
+                
+                // TODO: check Enter Water
+                if (hitResult.isBlockingHit)
+                {
+                    if (IsValidLandingSpot(_transientPosition, hitResult))
+                    {
+                        remainTime += subTimeTickRemain;
+                        ProcessLanded(hitResult, remainTime, iterations);
+                    }
+                    else
+                    {
+                        adjusted = velocity * timeTick;
+                        if (!hitResult.isStartPenetrating &&
+                            ShouldCheckForValidLandingSpot(timeTick, adjusted, hitResult))
+                        {
+                            var location = _transientPosition;
+                            FindGroundResult groundResult = new FindGroundResult();
+                            FindGround(location, ref groundResult, false, null);
+                            if (groundResult.isWalkableFloor && IsValidLandingSpot(location, groundResult.hitResult))
+                            {
+                                remainTime += subTimeTickRemain;
+                                ProcessLanded(groundResult.hitResult, remainTime, iterations);
+                                return;
+                            }
+                        }
+                        
+                    }
+                }
+            }
+            
+        }
+
+        private bool ShouldCheckForValidLandingSpot(float deltaTime, Vector3 delta, HitResult hitResult)
+        {
+            if (hitResult.hitInfo.normal.y > 1e-4)
+            {
+                if (IsWithinEdgeTolerance(hitResult, _capsule))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private Vector3 NewFallVelocity(Vector3 currentVelocity, Vector3 vGravity, float deltaTime)
+        {
+            var result = currentVelocity;
+            if (deltaTime > 0f)
+            {
+                result += vGravity * deltaTime;
+                if (result.magnitude > controller.terminalFallingVelocity)
+                {
+                    var gravityDir = vGravity.normalized;
+                    if (Vector3.Dot(result, gravityDir) > controller.terminalFallingVelocity)
+                    {
+                        result = Vector3.ProjectOnPlane(result, gravityDir) +
+                                 gravityDir * controller.terminalFallingVelocity;
+                    }
+                }
+            }
+
+            return result;
+        }
+        
+        private bool CheckFall(FindGroundResult oldFloor, HitResult hit, Vector3 delta, Vector3 oldPosition, float remainTime, float timeTick, int iteration, bool mustJump)
+        {
+            if (mustJump || CanWalkOffLedges())
+            {
+                HandleWalkingOffLedge();
+                if (IsMovingOnGround())
+                {
+                    StartFalling(iteration, remainTime, timeTick, delta, oldPosition);
+                }
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool IsValidLandingSpot(Vector3 position, HitResult hitResult)
+        {
+            if (!hitResult.isBlockingHit)
+                return false;
+
+            if (!hitResult.isStartPenetrating)
+            {
+                if (!IsStableOnNormal(hitResult.hitInfo.normal))
+                {
+                    return false;
+                }
+
+                var lowerHemisphereY =  hitResult.location.y + _capsule.Radius;
+                if (hitResult.hitInfo.point.y >= lowerHemisphereY)
+                {
+                    return false;
+                }
+
+                if (!IsWithinEdgeTolerance(hitResult, _capsule))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                if (hitResult.hitInfo.normal.y < 1e-4)
+                {
+                    return false;
+                }
+            }
+
+            FindGroundResult groundResult = new FindGroundResult();
+            FindGround(_transientPosition, ref groundResult, false, hitResult);
+
+            return groundResult.isWalkableFloor;
+        }
+
+        private void ProcessLanded(HitResult hitResult, float remainTime, int iterations)
+        {
+            Debug.Log("[MovementComp] ProcessLanded");
+            if (IsFalling())
+            {
+                SetPostLandedPhysics(hitResult);
+            }
+            
+            StartNewPhysics(remainTime, iterations);
+        }
+
+        private void SetPostLandedPhysics(HitResult hitResult)
+        {
+            var impactAccel = controller.acceleration + (IsFalling() ? new Vector3(0, -gravity, 0) : Vector3.zero);
+            var impactVelocity = velocity;
+            SetMovementMode(MoveMode.MoveWalking);
+
+            ApplyImpactPhysicsForces(hitResult, impactAccel, impactVelocity);
+        }
+
+        private void ApplyImpactPhysicsForces(HitResult hitResult, Vector3 impactAccel, Vector3 impactVelocity)
+        {
+            
+        }
+        
+        private void HandleWalkingOffLedge()
+        {
+            
+        }
+
+        private bool CanWalkOffLedges()
+        {
+            
+            return canWalkOffLedges;
+        }
+        
+        private void StartFalling(int iterations, float remainTime, float timeTick, Vector3 delta, Vector3 subLoc)
+        {
+            Debug.Log("[MovementComp] start falling");
+            var distance = delta.magnitude;
+            var actualDistance = (_transientPosition - subLoc).magnitude;
+            remainTime = distance < 1e-4 ? 0f : remainTime + timeTick * (1f - Mathf.Min(1f, actualDistance / distance));
+
+            if (IsMovingOnGround())
+            {
+                SetMovementMode(MoveMode.MoveFalling);
+            }
+
+            StartNewPhysics(remainTime, iterations);
+        }
+        
         private void MoveAlongGround(Vector3 moveVelocity, float deltaTime, ref StepDownResult? outStepDownResult)
         {
             var delta = moveVelocity * deltaTime;
@@ -1355,12 +1745,12 @@ namespace Disc0ver
 
         public bool IsMovingOnGround()
         {
-            return true;
+            return _movementMode == MoveMode.MoveWalking || _movementMode == MoveMode.MoveNavWalking;
         }
 
         public bool IsFalling()
         {
-            return false;
+            return _movementMode == MoveMode.MoveFalling;
         }
 
         public void RevertMove(MovementCache cache)

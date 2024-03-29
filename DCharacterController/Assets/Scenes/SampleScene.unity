@@ -510,7 +510,12 @@ MonoBehaviour:
   maxCollisionBudget: 16
   minFloorDistance: 0.05
   maxFloorDistance: 0.1
-  SweepEdgeRejectDistance: 0.15
+  SweepEdgeRejectDistance: 0.05
+  PerchRadiusThreshold: 0.15
+  perchAdditionalHeight: 0.05
+  fallingLateralFriction: 0.1
+  gravity: 5
+  canWalkOffLedges: 1
   stableGroundLayer:
     serializedVersion: 2
     m_Bits: 1
@@ -540,8 +545,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: c74ebb04d7b468943b2b4e113a072602, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  inputVec: {x: 0, y: 0, z: 0}
+  acceleration: {x: 0, y: 0, z: 0}
   maxVelocity: 3
   maxAcceleration: 10
+  jumpForceTimeRemain: 0
+  terminalFallingVelocity: 10
 --- !u!136 &688448010
 CapsuleCollider:
   m_ObjectHideFlags: 0

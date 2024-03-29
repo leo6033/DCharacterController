@@ -8,8 +8,8 @@ namespace Disc0ver
     [RequireComponent(typeof(MovementComponent))]
     public class CharacterController : MonoBehaviour
     {
-        private Vector3 inputVec;
-        private Vector3 acceleration;
+        public Vector3 inputVec;
+        public Vector3 acceleration;
 
         [SerializeField, Range(1f, 10f)]
         private float maxVelocity = 1f;
@@ -17,6 +17,12 @@ namespace Disc0ver
         private float maxAcceleration = 7f;
 
         private float brakingFrictionFactor = 2f;
+
+        private bool _jump;
+
+        public bool Jump => _jump;
+        public float jumpForceTimeRemain = 0f;
+        public float terminalFallingVelocity = 10f; 
 
         private void Awake()
         {
