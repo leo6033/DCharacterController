@@ -78,7 +78,7 @@ namespace Disc0ver
             var maxTimeStep = Mathf.Clamp(DCharacterControllerConst.BrakingSubStepTime, 1.0f / 75.0f, 1.0f / 20.0f);
             var revAccel = -breakingDeceleration * currentVelocity.normalized;
             var remainingTime = deltaTime;
-            while (remainingTime >= DCharacterControllerConst.MIN_TICK_TIME)
+            while (remainingTime >= DCharacterControllerConst.MinTickTime)
             {
                 var dt = (remainingTime > maxTimeStep) ? Mathf.Min(maxTimeStep, remainingTime * 0.5f) : remainingTime;
                 remainingTime -= dt;

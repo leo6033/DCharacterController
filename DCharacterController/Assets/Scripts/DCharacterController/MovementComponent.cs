@@ -289,7 +289,8 @@ namespace Disc0ver
 
     public class DCharacterControllerConst
     {
-        public static readonly float MIN_TICK_TIME = 1e-6f;
+        public static readonly float MinTickTime = 1e-6f;
+        public static readonly float VerticalSlopeNormalY = 0.001f;
         public static readonly float BrakingSubStepTime = 1.0f / 33.0f;
         public static readonly float CollisionOffset = 0.01f;
         public static readonly float GroundSweepBackOffset = 0.1f;
@@ -558,7 +559,7 @@ namespace Disc0ver
 
         private void StartNewPhysics(float deltaTime, int iterations)
         {
-            if ((deltaTime < DCharacterControllerConst.MIN_TICK_TIME) || (iterations >= maxSimulationIterations) || !HasValidData())
+            if ((deltaTime < DCharacterControllerConst.MinTickTime) || (iterations >= maxSimulationIterations) || !HasValidData())
             {
                 return;
             }
@@ -989,13 +990,13 @@ namespace Disc0ver
 
         private void Walking(float deltaTime, int iterations)
         {
-            if (deltaTime < DCharacterControllerConst.MIN_TICK_TIME)
+            if (deltaTime < DCharacterControllerConst.MinTickTime)
                 return;
             var remainingTime = deltaTime;
             var checkFall = false;
             var triedLedgeMove = false;
             var stepUp = false;
-            while (remainingTime >= DCharacterControllerConst.MIN_TICK_TIME && iterations < maxSimulationIterations)
+            while (remainingTime >= DCharacterControllerConst.MinTickTime && iterations < maxSimulationIterations)
             {
                 iterations++;
                 var oldLocation = _transientPosition;
@@ -1083,10 +1084,10 @@ namespace Disc0ver
 
         private void Falling(float deltaTime, int iterations)
         {
-            if (deltaTime < DCharacterControllerConst.MIN_TICK_TIME)
+            if (deltaTime < DCharacterControllerConst.MinTickTime)
                 return;
             var remainTime = deltaTime;
-            while ((remainTime >= DCharacterControllerConst.MIN_TICK_TIME) && (iterations < maxSimulationIterations))
+            while ((remainTime >= DCharacterControllerConst.MinTickTime) && (iterations < maxSimulationIterations))
             {
                 iterations++;
                 var timeTick = GetSimulationTimeStep(remainTime, iterations);
@@ -1152,7 +1153,75 @@ namespace Disc0ver
                                 return;
                             }
                         }
+
+                        if (!HasValidData() || !IsFalling())
+                            return;
+
+                        // var velocityNoAirControl = oldVelocity;
+                        // var airControlAccel = controller.acceleration;
                         
+                        // 斜坡
+                        var oldHitNormal = (hitResult.location + _transientRotation * _capsule.Center - hitResult.hitInfo.point).normalized;
+                        var oldHitImpactNormal = hitResult.hitInfo.normal;
+
+                        var delta = ComputeSlideVector(adjusted, 1 - hitResult.time, oldHitImpactNormal, hitResult);
+
+                        if (subTimeTickRemain > 1e-4 && Vector3.Dot(delta, adjusted) > 0)
+                        {
+                            SafeMoveUpdatedComponent(delta, _transientRotation, true, ref hitResult);
+
+                            if (hitResult.isBlockingHit)
+                            {
+                                // hit second wall
+                                lastMoveTimeSlice = subTimeTickRemain;
+                                subTimeTickRemain = subTimeTickRemain * (1 - hitResult.time);
+
+                                if (IsValidLandingSpot(_transientPosition, hitResult))
+                                {
+                                    remainTime += subTimeTickRemain;
+                                    ProcessLanded(hitResult, remainTime, iterations);
+                                    return;
+                                }
+
+                                if (!HasValidData() || !IsFalling())
+                                    return;
+
+                                // if (hitResult.hitInfo.normal.y > DCharacterControllerConst.VerticalSlopeNormalY)
+                                // {
+                                //     var lastMoveNoAirControl = velocityNoAirControl * lastMoveTimeSlice;
+                                //     delta = ComputeSlideVector(lastMoveNoAirControl, 1f, oldHitImpactNormal, hitResult);
+                                // }
+
+                                var preTwoWallDelta = delta;
+                                TwoWallAdjust(delta, ref hitResult, oldHitImpactNormal);
+                                
+                                SafeMoveUpdatedComponent( delta, _transientRotation, true, ref hitResult);
+                                // if (hitResult.time == 0)
+                                // {
+                                //     // 卡住了，尝试回避
+                                //     var sideDelta = oldHitImpactNormal + hitResult.hitInfo.normal;
+                                //     sideDelta.y = 0;
+                                //
+                                //     if (sideDelta.magnitude < 1e-4)
+                                //     {
+                                //         sideDelta = new Vector3(oldHitImpactNormal.z, 0, -oldHitImpactNormal.x)
+                                //             .normalized;
+                                //     }
+                                //     SafeMoveUpdatedComponent(sideDelta, _transientRotation, true, ref hitResult);
+                                // }
+
+                                // 峡谷
+                                var ditch = ((oldHitImpactNormal.y > 0f) && (hitResult.hitInfo.normal.y > 0f) &&
+                                             (Mathf.Abs(delta.y) <= 1e-4) &&
+                                             (Vector3.Dot(hitResult.hitInfo.normal, oldHitImpactNormal) < 0));
+                                if (ditch || IsValidLandingSpot(_transientPosition, hitResult) || hitResult.time == 0f)
+                                {
+                                    remainTime = 0f;
+                                    ProcessLanded(hitResult, remainTime, iterations);
+                                    return;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1697,7 +1766,41 @@ namespace Disc0ver
 
         private Vector3 ComputeSlideVector(Vector3 delta, float time, Vector3 normal, HitResult hit)
         {
-            return Vector3.ProjectOnPlane(delta, normal) * time;
+            var result = Vector3.ProjectOnPlane(delta, normal) * time;
+            if (IsFalling())
+            {
+                result = HandleSlopeBoosting(result, delta, time, normal, hit);
+            }
+
+            return result;
+        }
+
+        private Vector3 HandleSlopeBoosting(Vector3 slideResult, Vector3 delta, float time, Vector3 normal, HitResult hit)
+        {
+            var result = slideResult;
+            if (result.y > 0f)
+            {
+                var yLimit = delta.y * time;
+                if (result.y - yLimit > 1e-4)
+                {
+                    if (yLimit > 0)
+                    {
+                        var upPercent = yLimit / result.y;
+                        result *= upPercent;
+                    }
+                    else
+                    {
+                        result = Vector3.zero;
+                    }
+
+                    var remainderXZ = Vector3.Project(slideResult - result, Vector3.one - Vector3.up);
+                    var normalXZ = normal;
+                    var adjust = Vector3.ProjectOnPlane(remainderXZ, normalXZ);
+                    result += adjust;
+                }
+            }
+
+            return result;
         }
 
 
@@ -1717,7 +1820,7 @@ namespace Disc0ver
                 }
             }
 
-            return Mathf.Max(DCharacterControllerConst.MIN_TICK_TIME, remainingTime);
+            return Mathf.Max(DCharacterControllerConst.MinTickTime, remainingTime);
         }
 
         public bool IsStableOnNormal(Vector3 direction)
