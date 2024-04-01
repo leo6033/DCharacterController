@@ -5,6 +5,7 @@ using Unity.VisualScripting;
 using UnityEditor.UI;
 using UnityEngine;
 using UnityEngine.Assertions.Must;
+using UnityEngine.UIElements;
 
 namespace Disc0ver
 {
@@ -494,6 +495,8 @@ namespace Disc0ver
             // _transientPosition += delta;
             
             PerformMovement(deltaTime);
+
+            Rotate(deltaTime);
         }
         
         // public void OnDrawGizmos()
@@ -638,7 +641,18 @@ namespace Disc0ver
             {
                 Falling(deltaTime, 0);
             }
+            
+            Rotate(deltaTime);
         }
+
+        private void Rotate(float deltaTime)
+        {
+            var rotate = controller.GetDeltaRotation(_transientRotation, deltaTime);
+
+            MoveUpdatedComponent(Vector3.zero, rotate, false, ref CurrentGround.hitResult);
+        }
+
+        
 
         /// <summary>
         /// 移动核心接口，后续所有的运动类型都调用这个
@@ -674,7 +688,10 @@ namespace Disc0ver
             if (delta.magnitude <= minMovementDistance)
             {
                 hit.time = 0f;
-                return;
+                if (rotation.Equals(_transientRotation))
+                {
+                    return;
+                }
             }
             
             if (!isSweep)

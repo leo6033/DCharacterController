@@ -16,6 +16,8 @@ namespace Disc0ver
         [SerializeField, Range(1f, 10f)]
         private float maxAcceleration = 7f;
 
+        [SerializeField, Range(10f, 180f)] private float angleVelocity = 30f;
+
         private float brakingFrictionFactor = 2f;
 
         private bool _jump;
@@ -30,11 +32,20 @@ namespace Disc0ver
             movementComponent.controller = this;
         }
 
+        private void Start()
+        {
+            CameraController.Instance.FollowCharacter(this);
+        }
+
         private void HandleInput()
         {
             inputVec.x = Input.GetAxis("Horizontal");
             inputVec.z = Input.GetAxis("Vertical");
-            
+
+            var cameraForward = CameraController.Instance.Forward();
+            // var flag = Vector3.Dot(inputVec, cameraForward) < 0 ? -1 : 1;
+            inputVec = new Vector3(inputVec.z * cameraForward.x + inputVec.x * cameraForward.z, 0,
+                -inputVec.x * cameraForward.x + inputVec.z * cameraForward.z);
         }
 
         private void Update()
@@ -61,6 +72,19 @@ namespace Disc0ver
                 currentVelocity = Vector3.ClampMagnitude(currentVelocity, maxVelocity);
             }
             
+        }
+        
+        public Quaternion GetDeltaRotation(Quaternion transientRotation, float deltaTime)
+        {
+            var accForward = acceleration;
+            accForward.y = 0;
+
+            if (inputVec.magnitude < 1e-4)
+            {
+                return transientRotation;
+            }
+
+            return Quaternion.RotateTowards(transientRotation, Quaternion.LookRotation(accForward, Vector3.up), angleVelocity * deltaTime);
         }
 
         private void ApplyVelocityBreaking(ref Vector3 currentVelocity, float deltaTime, float friction, float breakingDeceleration)
