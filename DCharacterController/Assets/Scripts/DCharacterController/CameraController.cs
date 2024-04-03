@@ -7,7 +7,8 @@ namespace Disc0ver
     {
         public float minAngle = -90f;
         public float maxAngle = 90f;
-
+        public float cameraRotateSpeed = 5f;
+        
         public Transform lookAtTf;
 
         public static CameraController Instance { get; private set; }
@@ -37,9 +38,24 @@ namespace Disc0ver
         {
             var x = Input.GetAxisRaw("Mouse X");
             var y = Input.GetAxisRaw("Mouse Y");
-            
-            lookAtTf.Rotate(new Vector3(0, x, 0), Space.World);
-            lookAtTf.Rotate(new Vector3(-y, 0, 0), Space.World);
+
+            var eulerAngles = lookAtTf.transform.eulerAngles;
+            eulerAngles += Vector3.up * x * cameraRotateSpeed;
+            var tmpEulerAngles = eulerAngles;
+            eulerAngles += Vector3.left * y * cameraRotateSpeed;
+
+            float xRotation = eulerAngles.x;
+            if (xRotation > 180)
+                xRotation -= 360;
+            if (xRotation < minAngle || xRotation > maxAngle)
+            {
+                lookAtTf.transform.eulerAngles = tmpEulerAngles;
+            }
+            else
+            {
+                lookAtTf.transform.eulerAngles = eulerAngles;
+            }
+            // lookAtTf.transform.localRotation *= quaternion;
 
             lookAtTf.position = _characterController.transform.position;
         }

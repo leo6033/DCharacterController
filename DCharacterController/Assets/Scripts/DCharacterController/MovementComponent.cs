@@ -362,6 +362,7 @@ namespace Disc0ver
         #region Properties
 
         private Capsule _capsule;
+        public Vector3 Velocity => velocity;
         [SerializeField]
         private Vector3 velocity = Vector3.zero;
         private CharacterController _controller;
@@ -466,6 +467,12 @@ namespace Disc0ver
             _internalCharacterHits = new RaycastHit[maxHitsBudget];
             _internalProbedColliders = new Collider[maxCollisionBudget];
             _movementMode = MoveMode.MoveNone;
+        }
+
+        public void DoJump(float yVelocity)
+        {
+            velocity.y = yVelocity;
+            SetMovementMode(MoveMode.MoveFalling);
         }
 
         private void FixedUpdate()
@@ -585,7 +592,7 @@ namespace Disc0ver
             return true;
         }
         
-        private void SetMovementMode(MoveMode newMovementMode)
+        public void SetMovementMode(MoveMode newMovementMode)
         {
             if (newMovementMode == _movementMode)
                 return;
@@ -625,13 +632,13 @@ namespace Disc0ver
         
         private void PerformMovement(float deltaTime)
         {
-            if (_movementMode == MoveMode.MoveNone)
-            {
-                if (controller.inputVec.magnitude > 0)
-                {
-                    _movementMode = MoveMode.MoveWalking;
-                }
-            }
+            // if (_movementMode == MoveMode.MoveNone)
+            // {
+            //     if (controller.inputVec.magnitude > 0)
+            //     {
+            //         _movementMode = MoveMode.MoveWalking;
+            //     }
+            // }
 
             if (_movementMode == MoveMode.MoveWalking)
             {
@@ -1121,10 +1128,12 @@ namespace Disc0ver
                 var vGravity = new Vector3(0, -gravity, 0);
                 var gravityTime = timeTick;
                 var endingJumpForce = false;
+
+                // 
                 if (controller.jumpForceTimeRemain > 0f)
                 {
                     var jumpForceTime = Mathf.Min(controller.jumpForceTimeRemain, timeTick);
-                    gravityTime = Mathf.Max(0f, timeTick - jumpForceTime);
+                    gravityTime = controller.ApplyGravityWhileJump ? timeTick : Mathf.Max(0f, timeTick - jumpForceTime);
 
                     controller.jumpForceTimeRemain -= jumpForceTime;
                     if (controller.jumpForceTimeRemain <= 0f)
@@ -1133,9 +1142,24 @@ namespace Disc0ver
                     }
                 }
 
+                // apply gravity
                 velocity = NewFallVelocity(velocity, vGravity, gravityTime);
+                
+                // TODO: 跳跃到顶点的时候
+
+                if (controller.NotifyApex && velocity.y < 0)
+                {
+                    controller.NotifyJumpApex();
+                }
 
                 var adjusted = 0.5f * (oldVelocity + velocity) * timeTick;
+
+                if (controller.ApplyGravityWhileJump && endingJumpForce)
+                {
+                    var noneGravityTime = Mathf.Max(0f, timeTick - gravityTime);
+                    adjusted = oldVelocity * noneGravityTime + 0.5f * (oldVelocity + velocity) * gravityTime;
+                }
+                
                 HitResult hitResult = new HitResult();
                 
                 SafeMoveUpdatedComponent(adjusted, _transientRotation, true, ref hitResult);
@@ -1216,6 +1240,7 @@ namespace Disc0ver
                                 // if (hitResult.time == 0)
                                 // {
                                 //     // 卡住了，尝试回避
+                                //     // 注：这里会在进入峡谷的时候直接将玩家移到峡谷外，根据具体情况看要不要开启
                                 //     var sideDelta = oldHitImpactNormal + hitResult.hitInfo.normal;
                                 //     sideDelta.y = 0;
                                 //

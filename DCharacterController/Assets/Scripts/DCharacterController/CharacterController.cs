@@ -1,11 +1,14 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using Disc0ver.FSM;
+using UnityEditor.UI;
 using UnityEngine;
 
 namespace Disc0ver
 {
     [RequireComponent(typeof(MovementComponent))]
+    [RequireComponent(typeof(AnimationComponent))]
     public class CharacterController : MonoBehaviour
     {
         public Vector3 inputVec;
@@ -15,21 +18,35 @@ namespace Disc0ver
         private float maxVelocity = 1f;
         [SerializeField, Range(1f, 10f)]
         private float maxAcceleration = 7f;
+        [SerializeField, Range(1f, 20f)] 
+        private float maxJumpSpeed = 15f;
+        [SerializeField, Range(0.3f, 0.5f)] 
+        public float maxJumpDownTime = 0.3f;
 
         [SerializeField, Range(10f, 180f)] private float angleVelocity = 30f;
 
         private float brakingFrictionFactor = 2f;
 
         private bool _jump;
+        private bool _notifyApex = false;
+        private bool _applyGravityWhileJump = true;
 
         public bool Jump => _jump;
+        public bool ApplyGravityWhileJump => _applyGravityWhileJump;
         public float jumpForceTimeRemain = 0f;
-        public float terminalFallingVelocity = 10f; 
+        public float terminalFallingVelocity = 10f;
+        public bool NotifyApex => _notifyApex;
+
+        public MovementComponent MovementComponent => _movementComponent;
+        private MovementComponent _movementComponent;
+        public StateMachine stateMachine;
+        public AnimationClips animationClips;
 
         private void Awake()
         {
-            var movementComponent = GetComponent<MovementComponent>();
-            movementComponent.controller = this;
+            _movementComponent = GetComponent<MovementComponent>();
+            _movementComponent.controller = this;
+            stateMachine = new StateMachine(this);
         }
 
         private void Start()
@@ -46,6 +63,20 @@ namespace Disc0ver
             // var flag = Vector3.Dot(inputVec, cameraForward) < 0 ? -1 : 1;
             inputVec = new Vector3(inputVec.z * cameraForward.x + inputVec.x * cameraForward.z, 0,
                 -inputVec.x * cameraForward.x + inputVec.z * cameraForward.z);
+
+            stateMachine.Update(Time.deltaTime);
+        }
+
+        public void DoJump(float time)
+        {
+            jumpForceTimeRemain = 1f;
+            _movementComponent.DoJump(time / maxJumpDownTime * maxJumpSpeed);
+            stateMachine.ChangeToState(StateType.Jump);
+        }
+
+        public void StartMove()
+        {
+            _movementComponent.SetMovementMode(MoveMode.MoveWalking);
         }
 
         private void Update()
@@ -76,7 +107,7 @@ namespace Disc0ver
         
         public Quaternion GetDeltaRotation(Quaternion transientRotation, float deltaTime)
         {
-            var accForward = acceleration;
+            var accForward = inputVec;
             accForward.y = 0;
 
             if (inputVec.magnitude < 1e-4)
@@ -118,6 +149,23 @@ namespace Disc0ver
             
             if(currentVelocity.magnitude < 0.01f)
                 currentVelocity = Vector3.zero;
+        }
+
+        public void NotifyJumpApex()
+        {
+            _notifyApex = false;
+            if (stateMachine.currentState is JumpState jumpState)
+            {
+                jumpState.NotifyJumpApex();
+            }
+        }
+
+        public void OnLand()
+        {
+            if(inputVec.magnitude > 1e-4)
+                stateMachine.ChangeToState(StateType.Move);
+            else
+                stateMachine.ChangeToState(StateType.Idle);
         }
     }
 }
