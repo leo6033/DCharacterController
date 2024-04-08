@@ -4,7 +4,7 @@ using UnityEngine;
 namespace Disc0ver
 {
     [Serializable]
-    public struct AnimationClips
+    public struct DccAnimClips
     {
         [Header("空闲")]
         public AnimationClip idle;

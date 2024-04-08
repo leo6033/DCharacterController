@@ -8,11 +8,12 @@ using UnityEngine;
 namespace Disc0ver
 {
     [RequireComponent(typeof(MovementComponent))]
-    [RequireComponent(typeof(AnimationComponent))]
+    [RequireComponent(typeof(DccAnimComponent))]
     public class CharacterController : MonoBehaviour
     {
         public Vector3 inputVec;
         public Vector3 acceleration;
+        public GameObject modelGo;
 
         [SerializeField, Range(1f, 10f)]
         private float maxVelocity = 1f;
@@ -40,7 +41,7 @@ namespace Disc0ver
         public MovementComponent MovementComponent => _movementComponent;
         private MovementComponent _movementComponent;
         public StateMachine stateMachine;
-        public AnimationClips animationClips;
+        public DccAnimClips dccAnimClips;
 
         private void Awake()
         {
@@ -86,6 +87,7 @@ namespace Disc0ver
 
         public void CalcVelocity(ref Vector3 currentVelocity, float deltaTime, float friction, bool fluid, float breakingDeceleration)
         {
+            
             acceleration = Vector3.ClampMagnitude(inputVec, 1) * maxAcceleration;
             if (acceleration.magnitude < 0.001f)
             {
@@ -94,6 +96,10 @@ namespace Disc0ver
             }
             else
             {
+                if (stateMachine.animancerComponent.Animator.applyRootMotion)
+                {
+                    currentVelocity = stateMachine.animancerComponent.Animator.velocity;
+                }
                 friction = Mathf.Max(0f, friction);
                 currentVelocity = currentVelocity -
                                   (currentVelocity - acceleration.normalized * currentVelocity.magnitude) *
@@ -115,6 +121,21 @@ namespace Disc0ver
                 return transientRotation;
             }
 
+            if (stateMachine.animancerComponent.Animator.applyRootMotion)
+            {
+                float angleInDegrees;
+                Vector3 rotationAxis;
+                stateMachine.animancerComponent.Animator.deltaRotation.ToAngleAxis(out angleInDegrees, out rotationAxis);
+                Debug.Log($"{transientRotation.eulerAngles + stateMachine.animancerComponent.Animator.deltaRotation.eulerAngles} {angleInDegrees} {rotationAxis} {stateMachine.animancerComponent.Animator.angularVelocity}");
+                var target = transientRotation.eulerAngles +
+                             stateMachine.animancerComponent.Animator.deltaRotation.eulerAngles;
+                if (target.y > 180)
+                    target.y -= 360;
+                else if (target.y < -180)
+                    target.y += 360;
+                return transientRotation * stateMachine.animancerComponent.Animator.deltaRotation;
+            }
+            
             return Quaternion.RotateTowards(transientRotation, Quaternion.LookRotation(accForward, Vector3.up), angleVelocity * deltaTime);
         }
 

@@ -6,11 +6,11 @@ using UnityEngine.Playables;
 
 namespace Disc0ver
 {
-    public class AnimationComponent: MonoBehaviour
+    public class DccAnimComponent: MonoBehaviour
     {
         public Animator animator;
         private PlayableGraph _playableGraph;
-        private Dictionary<StateType, AnimationLayer> _layerMap = new Dictionary<StateType, AnimationLayer>();
+        private Dictionary<Layer, DccAnimLayer> _layerMap = new Dictionary<Layer, DccAnimLayer>();
 
         private void Awake()
         {
@@ -22,7 +22,7 @@ namespace Disc0ver
             _playableGraph.Play();
         }
 
-        public void PlayAnimation()
+        public void PlayAnimation(AnimationClip animationClip, Layer layer)
         {
             
         }

@@ -13,7 +13,8 @@ namespace Disc0ver.FSM
         {
             _jumpTime = 0;
             _jumpDown = false;
-            stateMachine.controller.StartMove();
+            stateMachine.animancerComponent.Play(stateMachine.controller.dccAnimClips.run, 0.25f);
+            stateMachine.animancerComponent.Animator.applyRootMotion = false;
         }
 
         public override void HandleInput(StateMachine stateMachine)
@@ -42,7 +43,7 @@ namespace Disc0ver.FSM
 
         public override void OnExistState(StateMachine stateMachine)
         {
-            
+            // stateMachine.animancerComponent.Play(stateMachine.controller.dccAnimClips.run, 0.25f);
         }
     }
 }

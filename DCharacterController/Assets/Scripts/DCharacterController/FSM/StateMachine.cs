@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Animancer;
 
 namespace Disc0ver.FSM
 {
@@ -47,6 +48,7 @@ namespace Disc0ver.FSM
         public CharacterController controller;
 
         public BaseState currentState;
+        public AnimancerComponent animancerComponent;
 
         public StateMachine(CharacterController controller)
         {
@@ -59,11 +61,14 @@ namespace Disc0ver.FSM
 
             this.controller = controller;
             currentState = states[StateType.Idle];
+            animancerComponent = controller.modelGo.GetComponent<AnimancerComponent>();
+            currentState.OnEnterState(this);
         }
         
         public void Update(float deltaTime)
         {
             currentState.Update(this, deltaTime);
+            controller.modelGo.transform.SetPositionAndRotation(controller.transform.position, controller.transform.rotation);
         }
 
         public void ChangeToState(StateType stateType)
