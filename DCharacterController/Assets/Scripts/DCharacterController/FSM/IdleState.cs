@@ -13,7 +13,6 @@ namespace Disc0ver.FSM
         private float _rotateTime = 0f;
 
         private Quaternion _startQuaternion;
-        private LinearMixerState _rotateMixer = new LinearMixerState();
         
         public override void OnEnterState(StateMachine stateMachine)
         {
@@ -32,6 +31,7 @@ namespace Disc0ver.FSM
             {
                 _jumpTime = 0f;
                 _jumpDown = true;
+                stateMachine.animancerComponent.Play(stateMachine.controller.dccAnimClips.jump, 0.2f);
             }
 
             if (_jumpDown)
@@ -42,16 +42,18 @@ namespace Disc0ver.FSM
                     stateMachine.controller.DoJump(_jumpTime);
                     _jumpDown = false;
                 }
-                return;
             }
+        }
 
+        public override void UpdateAnimation(StateMachine stateMachine)
+        {
             if (stateMachine.controller.inputVec.magnitude > 0.5f)
             {
                 if (_moveTime == 0)
                 {
                     _startQuaternion = stateMachine.controller.transform.rotation;
-                    GetRotateAnimationClip(stateMachine);
-                    var state = stateMachine.animancerComponent.Play(_rotateMixer);
+                    GetRotateAnimationClip(stateMachine, ref stateMachine.RunStartMixerState);
+                    var state = stateMachine.animancerComponent.Play(stateMachine.RunStartMixerState);
                     _rotateTime = state.Length;
                     stateMachine.controller.StartMove();
                     Debug.Log($"[Idle] rotate {_rotateTime}");
@@ -71,7 +73,7 @@ namespace Disc0ver.FSM
             }
         }
 
-        private LinearMixerState GetRotateAnimationClip(StateMachine stateMachine)
+        public static LinearMixerState GetRotateAnimationClip(StateMachine stateMachine, ref LinearMixerState rotateMixer)
         {
             var angle = Vector3.Angle(stateMachine.controller.inputVec, stateMachine.controller.transform.forward);
             var percent = 1f;
@@ -84,43 +86,43 @@ namespace Disc0ver.FSM
             if (angle is >= -180 and < -135)
             {
                 percent = (-135 - angle) / 45;
-                _rotateMixer.Initialize(stateMachine.controller.dccAnimClips.runStartTurnLeft135,
+                rotateMixer.Initialize(stateMachine.controller.dccAnimClips.runStartTurnLeft135,
                     stateMachine.controller.dccAnimClips.runStartTurnLeft180);
             }
             else if (angle is >= -135 and < -90 )
             {
                 percent = (-90 - angle) / 45;
-                _rotateMixer.Initialize(stateMachine.controller.dccAnimClips.runStartTurnLeft90,
+                rotateMixer.Initialize(stateMachine.controller.dccAnimClips.runStartTurnLeft90,
                     stateMachine.controller.dccAnimClips.runStartTurnLeft135);
             }
             else if (angle is >= -90 and < 0)
             {
                 percent = - angle / 90;
-                _rotateMixer.Initialize(stateMachine.controller.dccAnimClips.runStart,
+                rotateMixer.Initialize(stateMachine.controller.dccAnimClips.runStart,
                     stateMachine.controller.dccAnimClips.runStartTurnLeft90);
             }
             else if(angle is >=0 and < 90)
             {
                 percent = angle / 90;
-                _rotateMixer.Initialize(stateMachine.controller.dccAnimClips.runStart,
+                rotateMixer.Initialize(stateMachine.controller.dccAnimClips.runStart,
                     stateMachine.controller.dccAnimClips.runStartTurnRight90);
             }
             else if(angle is >= 90 and < 135)
             {
                 percent = (angle - 90) / 45;
-                _rotateMixer.Initialize(stateMachine.controller.dccAnimClips.runStartTurnRight90,
+                rotateMixer.Initialize(stateMachine.controller.dccAnimClips.runStartTurnRight90,
                     stateMachine.controller.dccAnimClips.runStartTurnRight135);
             }
             else if(angle is >= 135 and <= 180)
             {
                 percent = (angle - 135) / 45;
-                _rotateMixer.Initialize(stateMachine.controller.dccAnimClips.runStartTurnRight135,
+                rotateMixer.Initialize(stateMachine.controller.dccAnimClips.runStartTurnRight135,
                     stateMachine.controller.dccAnimClips.runStartTurnRight180);
             }
-            _rotateMixer.Parameter = percent;
-            Debug.Log($"[Idle] GetRotateAnimationClip percent: {percent}");
+            rotateMixer.Parameter = percent;
+            Debug.Log($"[Idle] GetRotateAnimationClip percent: {percent} angle: {angle}");
             
-            return _rotateMixer;
+            return rotateMixer;
         }
 
         public override void OnExistState(StateMachine stateMachine)

@@ -475,9 +475,9 @@ namespace Disc0ver
             SetMovementMode(MoveMode.MoveFalling);
         }
 
-        private void FixedUpdate()
+        public void Tick(float deltaTime)
         {
-            Simulate(Time.fixedDeltaTime);
+            Simulate(deltaTime);
             
             SetPositionAndRotation(_transientPosition, _transientRotation);
         }
@@ -614,20 +614,18 @@ namespace Disc0ver
             }
             else
             {
-                CurrentGround.Clear();
-                
                 if (newMovementMode == MoveMode.MoveFalling)
                 {
-                    // controller.Falling();
+                    controller.Falling();
                 }
-
-                if (newMovementMode == MoveMode.MoveNone)
-                {
-                    
-                }
+                
+                CurrentGround.Clear();
             }
             
-            
+            if (preMovementMode == MoveMode.MoveFalling)
+            {
+                controller.OnLand();
+            }
         }
         
         private void PerformMovement(float deltaTime)

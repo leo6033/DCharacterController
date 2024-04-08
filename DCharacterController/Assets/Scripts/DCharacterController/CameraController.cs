@@ -34,7 +34,7 @@ namespace Disc0ver
             lookAtTf.position = _characterController.transform.position;
         }
 
-        private void Update()
+        public void Tick()
         {
             var x = Input.GetAxisRaw("Mouse X");
             var y = Input.GetAxisRaw("Mouse Y");

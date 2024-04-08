@@ -43,8 +43,11 @@ namespace Disc0ver
         public StateMachine stateMachine;
         public DccAnimClips dccAnimClips;
 
+        private Vector3 _lastRootPosition;
+
         private void Awake()
         {
+            // Application.targetFrameRate = 60;
             _movementComponent = GetComponent<MovementComponent>();
             _movementComponent.controller = this;
             stateMachine = new StateMachine(this);
@@ -55,7 +58,7 @@ namespace Disc0ver
             CameraController.Instance.FollowCharacter(this);
         }
 
-        private void HandleInput()
+        private void HandleInput(float deltaTime)
         {
             inputVec.x = Input.GetAxis("Horizontal");
             inputVec.z = Input.GetAxis("Vertical");
@@ -65,13 +68,13 @@ namespace Disc0ver
             inputVec = new Vector3(inputVec.z * cameraForward.x + inputVec.x * cameraForward.z, 0,
                 -inputVec.x * cameraForward.x + inputVec.z * cameraForward.z);
 
-            stateMachine.Update(Time.deltaTime);
         }
 
-        public void DoJump(float time)
+        public void DoJump(float percent)
         {
+            _notifyApex = true;
             jumpForceTimeRemain = 1f;
-            _movementComponent.DoJump(time / maxJumpDownTime * maxJumpSpeed);
+            _movementComponent.DoJump(Mathf.Max(0.5f, percent) * maxJumpSpeed);
             stateMachine.ChangeToState(StateType.Jump);
         }
 
@@ -80,14 +83,23 @@ namespace Disc0ver
             _movementComponent.SetMovementMode(MoveMode.MoveWalking);
         }
 
-        private void Update()
+        private void FixedUpdate()
         {
-            HandleInput();
+            var deltaTime = Time.deltaTime;
+            _lastRootPosition = transform.position;
+            stateMachine.Update(deltaTime);
+
+            HandleInput(deltaTime);
+            _movementComponent.Tick(deltaTime);
+        }
+
+        private void LateUpdate()
+        {
+            CameraController.Instance.Tick();
         }
 
         public void CalcVelocity(ref Vector3 currentVelocity, float deltaTime, float friction, bool fluid, float breakingDeceleration)
         {
-            
             acceleration = Vector3.ClampMagnitude(inputVec, 1) * maxAcceleration;
             if (acceleration.magnitude < 0.001f)
             {
@@ -98,8 +110,12 @@ namespace Disc0ver
             {
                 if (stateMachine.animancerComponent.Animator.applyRootMotion)
                 {
+                    Debug.Log($"rootPosition {stateMachine.animancerComponent.Animator.rootPosition}");
+                    // currentVelocity = (stateMachine.animancerComponent.Animator.rootPosition - _lastRootPosition) / deltaTime;
                     currentVelocity = stateMachine.animancerComponent.Animator.velocity;
+                    return;
                 }
+                
                 friction = Mathf.Max(0f, friction);
                 currentVelocity = currentVelocity -
                                   (currentVelocity - acceleration.normalized * currentVelocity.magnitude) *
@@ -123,17 +139,10 @@ namespace Disc0ver
 
             if (stateMachine.animancerComponent.Animator.applyRootMotion)
             {
-                float angleInDegrees;
-                Vector3 rotationAxis;
-                stateMachine.animancerComponent.Animator.deltaRotation.ToAngleAxis(out angleInDegrees, out rotationAxis);
-                Debug.Log($"{transientRotation.eulerAngles + stateMachine.animancerComponent.Animator.deltaRotation.eulerAngles} {angleInDegrees} {rotationAxis} {stateMachine.animancerComponent.Animator.angularVelocity}");
-                var target = transientRotation.eulerAngles +
-                             stateMachine.animancerComponent.Animator.deltaRotation.eulerAngles;
-                if (target.y > 180)
-                    target.y -= 360;
-                else if (target.y < -180)
-                    target.y += 360;
-                return transientRotation * stateMachine.animancerComponent.Animator.deltaRotation;
+                var angle = stateMachine.animancerComponent.Animator.bodyRotation.eulerAngles;
+                angle.x = 0;
+                angle.z = 0;
+                return stateMachine.animancerComponent.Animator.rootRotation;
             }
             
             return Quaternion.RotateTowards(transientRotation, Quaternion.LookRotation(accForward, Vector3.up), angleVelocity * deltaTime);
@@ -175,18 +184,20 @@ namespace Disc0ver
         public void NotifyJumpApex()
         {
             _notifyApex = false;
-            if (stateMachine.currentState is JumpState jumpState)
-            {
-                jumpState.NotifyJumpApex();
-            }
         }
 
         public void OnLand()
         {
+            Debug.Log("[Controller] land");
             if(inputVec.magnitude > 1e-4)
                 stateMachine.ChangeToState(StateType.Move);
             else
                 stateMachine.ChangeToState(StateType.Idle);
+        }
+
+        public void Falling()
+        {
+            stateMachine.ChangeToState(StateType.Jump);
         }
     }
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Animancer;
+using UnityEngine;
 
 namespace Disc0ver.FSM
 {
@@ -50,6 +51,9 @@ namespace Disc0ver.FSM
         public BaseState currentState;
         public AnimancerComponent animancerComponent;
 
+        public LinearMixerState RunStartMixerState = new LinearMixerState();
+        public LinearMixerState RunMixerState = new LinearMixerState();
+
         public StateMachine(CharacterController controller)
         {
             states = new Dictionary<StateType, BaseState>()
@@ -63,12 +67,18 @@ namespace Disc0ver.FSM
             currentState = states[StateType.Idle];
             animancerComponent = controller.modelGo.GetComponent<AnimancerComponent>();
             currentState.OnEnterState(this);
+            
         }
         
         public void Update(float deltaTime)
         {
             currentState.Update(this, deltaTime);
-            controller.modelGo.transform.SetPositionAndRotation(controller.transform.position, controller.transform.rotation);
+            if (!animancerComponent.Animator.applyRootMotion)
+            {
+                controller.modelGo.transform.rotation = Quaternion.RotateTowards(controller.modelGo.transform.rotation, controller.transform.rotation, 10);
+                // controller.modelGo.transform.SetPositionAndRotation(controller.transform.position, controller.transform.rotation);
+            }
+            controller.modelGo.transform.position = controller.transform.position;
         }
 
         public void ChangeToState(StateType stateType)
