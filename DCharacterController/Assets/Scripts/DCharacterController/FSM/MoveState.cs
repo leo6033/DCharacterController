@@ -29,6 +29,11 @@ namespace Disc0ver.FSM
             {
                 _jumpTime = 0f;
                 _jumpDown = true;
+                stateMachine.animancerComponent.Animator.applyRootMotion = false;
+                stateMachine.animancerComponent.Play(stateMachine.controller.dccAnimClips.jump, 0.25f).Events.OnEnd = () =>
+                {
+                    stateMachine.animancerComponent.Play(stateMachine.controller.dccAnimClips.jumpFallingLoop, 0.1f);
+                };
             }
 
             if (_jumpDown)
@@ -37,7 +42,6 @@ namespace Disc0ver.FSM
                 if (_jumpTime >= stateMachine.controller.maxJumpDownTime || Input.GetKeyUp(KeyCode.Space))
                 {
                     stateMachine.controller.DoJump(_jumpTime);
-                    _jumpDown = false;
                 }
             }
 
@@ -50,6 +54,9 @@ namespace Disc0ver.FSM
             {
                 stateMachine.ChangeToState(StateType.Idle);
             }
+
+            if (_jumpDown)
+                return;
 
             var angle = Vector3.Angle(stateMachine.controller.inputVec,
                 stateMachine.controller.MovementComponent.Velocity);

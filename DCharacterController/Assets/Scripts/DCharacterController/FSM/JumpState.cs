@@ -9,10 +9,7 @@ namespace Disc0ver.FSM
             stateMachine.animancerComponent.Animator.applyRootMotion = false;
             if (stateMachine.controller.NotifyApex)
             {
-                stateMachine.animancerComponent.Play(stateMachine.controller.dccAnimClips.jump).Events.OnEnd = () =>
-                {
-                    stateMachine.animancerComponent.Play(stateMachine.controller.dccAnimClips.jumpFallingLoop, 0.1f);
-                };
+                
             }
             else
             {

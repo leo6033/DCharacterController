@@ -83,19 +83,31 @@ namespace Disc0ver
             _movementComponent.SetMovementMode(MoveMode.MoveWalking);
         }
 
-        private void FixedUpdate()
+        // private void FixedUpdate()
+        // {
+        //     var deltaTime = Time.fixedDeltaTime;
+        //     _lastRootPosition = transform.position;
+        //     // CameraController.Instance.Tick();
+        //
+        //     HandleInput(deltaTime);
+        //     _movementComponent.Tick(deltaTime);
+        //
+        //     // stateMachine.Update(deltaTime);
+        // }
+
+        public void Update()
         {
             var deltaTime = Time.deltaTime;
-            _lastRootPosition = transform.position;
-            stateMachine.Update(deltaTime);
-
+            CameraController.Instance.Tick();
+            
             HandleInput(deltaTime);
             _movementComponent.Tick(deltaTime);
+        
+            stateMachine.Update(deltaTime);
         }
 
         private void LateUpdate()
         {
-            CameraController.Instance.Tick();
         }
 
         public void CalcVelocity(ref Vector3 currentVelocity, float deltaTime, float friction, bool fluid, float breakingDeceleration)
